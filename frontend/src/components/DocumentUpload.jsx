@@ -90,48 +90,67 @@ const DocumentUpload = ({ isOpen, onClose, onUploadSuccess }) => {
   };
 
   const handleUpload = async () => {
-    if (!file) return;
+  if (!file) return;
 
-    setUploading(true);
-    setError('');
+  setUploading(true);
+  setError('');
 
-    try {
-      // Read file content
-      const reader = new FileReader();
+  try {
+    const reader = new FileReader();
+    
+    reader.onload = async (e) => {
+      let content = e.target.result;
       
-      reader.onload = async (e) => {
-        const content = e.target.result;
+      // PDF ise base64'e çevir
+      const isPDF = file.name.toLowerCase().endsWith('.pdf');
+      
+      if (isPDF) {
+        // ArrayBuffer'ı base64'e çevir
+        const base64 = btoa(
+          new Uint8Array(content)
+            .reduce((data, byte) => data + String.fromCharCode(byte), '')
+        );
+        content = base64;
+      }
 
-        // Send to backend
-        const response = await axios.post('http://localhost:8000/api/upload-document', {
-          content: content,
-          filename: file.name,
-          metadata: {
-            size: file.size,
-            type: file.type || 'text/plain',
-          }
-        });
-
-        if (response.data.status === 'success') {
-          onUploadSuccess(response.data);
-          setFile(null);
-          loadDocuments(); // Listeyi yenile
-        } else {
-          setError(response.data.error || 'Upload failed');
+      // Send to backend
+      const response = await axios.post('http://localhost:8000/api/upload-document', {
+        content: content,
+        filename: file.name,
+        user_id: 'default',
+        metadata: {
+          size: file.size,
+          type: file.type || (isPDF ? 'application/pdf' : 'text/plain'),
         }
-      };
+      });
 
-      reader.onerror = () => {
-        setError('Dosya okunamadı');
-      };
+      if (response.data.status === 'success') {
+        onUploadSuccess(response.data);
+        setFile(null);
+        loadDocuments();
+      } else {
+        setError(response.data.error || 'Upload failed');
+      }
+    };
 
+    reader.onerror = () => {
+      setError('Dosya okunamadı');
+    };
+
+    // PDF için ArrayBuffer, TXT için text
+    if (file.name.toLowerCase().endsWith('.pdf')) {
+      reader.readAsArrayBuffer(file);
+    } else {
       reader.readAsText(file);
-    } catch (err) {
-      setError(err.response?.data?.detail || 'Yükleme hatası');
-    } finally {
-      setUploading(false);
     }
-  };
+    
+  } catch (err) {
+    console.error('Upload error:', err);
+    setError(err.response?.data?.detail || 'Yükleme hatası');
+  } finally {
+    setUploading(false);
+  }
+};
 
   const handleDelete = async (docId) => {
     if (!confirm('Bu dokümanı silmek istediğinize emin misiniz?')) return;

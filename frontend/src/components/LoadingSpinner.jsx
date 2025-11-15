@@ -1,7 +1,8 @@
 // src/components/LoadingSpinner.jsx
+
 import React from 'react';
 
-const LoadingSpinner = () => {
+export function LoadingSpinner() {
   return (
     <div style={{
       display: 'flex',
@@ -33,6 +34,4 @@ const LoadingSpinner = () => {
       </span>
     </div>
   );
-};
-
-export default LoadingSpinner;
+}

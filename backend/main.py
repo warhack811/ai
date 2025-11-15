@@ -26,7 +26,7 @@ from services.pipeline import process_chat
 from services.rate_limit import rate_limiter_dependency
 from services.stats_service import get_stats_summary
 from services import upload_service
-
+from fastapi.responses import StreamingResponse
 settings = get_settings()
 
 app = FastAPI(

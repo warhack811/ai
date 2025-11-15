@@ -14,7 +14,7 @@ from typing import Dict, Optional
 import httpx
 from schemas.common import ChatMode
 from config import get_settings
-
+import json
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
@@ -126,13 +126,13 @@ class OllamaClient:
         
         # OPTIMIZED DEFAULTS
         temp = temperature if temperature is not None else 0.7
-        num_predict = max_tokens if max_tokens is not None else 2048
+        num_predict = max_tokens if max_tokens is not None else 4096
         ctx = num_ctx if num_ctx is not None else 8192
         
         payload = {
             "model": model_name,
             "prompt": prompt,
-            "stream": False,
+            "stream": True,
             "options": {
                 "temperature": float(temp),
                 "num_predict": int(num_predict),
@@ -177,11 +177,30 @@ class OllamaClient:
             return f"❌ Ollama hatası (HTTP {resp.status_code})"
         
         try:
-            data = resp.json()
-        except Exception as e:
-            logger.error("JSON parse hatası: %s", e)
-            return "❌ Model cevabı okunamadı."
+    # Ollama bazen multi-line JSON döndürüyor, son satırı al
+            response_text = resp.text.strip()
+    
+    # Multi-line ise son satırı parse et
+            if '\n' in response_text:
+                lines = response_text.split('\n')
+        # Son boş olmayan satırı al
+                for line in reversed(lines):
+                    if line.strip():
+                        data = json.loads(line)
+                        break
+                else:
+                    data = json.loads(lines[-1])
+            else:
+                data = json.loads(response_text)
         
+        except json.JSONDecodeError as e:
+            logger.error("JSON parse hatası: %s", e)
+            logger.error("Raw response: %s", resp.text[:500])
+            return "❌ Model cevabı okunamadı. Lütfen tekrar deneyin."
+        except Exception as e:
+            logger.error("Beklenmeyen hata: %s", e)
+            return "❌ Bir hata oluştu."
+
         text = data.get("response", "").strip()
         
         if not text:
