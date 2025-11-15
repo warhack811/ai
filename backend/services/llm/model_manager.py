@@ -118,13 +118,78 @@ class OllamaClient:
         num_ctx: Optional[int] = None,
     ) -> str:
         """
-        Model ile cevap üret - OPTIMIZED VERSION
-        
-        NOT: system_prompt artık kullanılmıyor (native templates içinde)
+        Model ile cevap üret - NON-STREAMING VERSION
         """
         url = f"{self.base_url}/api/generate"
         
-        # OPTIMIZED DEFAULTS
+        temp = temperature if temperature is not None else 0.7
+        num_predict = max_tokens if max_tokens is not None else 4096
+        ctx = num_ctx if num_ctx is not None else 8192
+        
+        payload = {
+            "model": model_name,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "temperature": float(temp),
+                "num_predict": int(num_predict),
+                "num_ctx": int(ctx),
+                "top_k": 40,
+                "top_p": 0.9,
+                "repeat_penalty": 1.1,
+                "stop": ["<|im_end|>"],
+            },
+        }
+        
+        logger.debug(f"Ollama request: model={model_name}, temp={temp}, max_tokens={num_predict}")
+        
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                resp = await client.post(url, json=payload)
+        except httpx.TimeoutException:
+            logger.error("Ollama timeout (model=%s)", model_name)
+            return "⏱️ Model çok yavaş yanıt verdi."
+        except Exception as e:
+            logger.error("Ollama bağlantı hatası: %s", e)
+            return f"❌ Ollama'ya bağlanılamadı: {e}"
+        
+        if resp.status_code == 404:
+            logger.error("Model bulunamadı: %s", model_name)
+            return f"❌ Model '{model_name}' bulunamadı."
+        
+        if resp.status_code != 200:
+            logger.error("Ollama HTTP %s", resp.status_code)
+            return f"❌ Ollama hatası (HTTP {resp.status_code})"
+        
+        try:
+            data = resp.json()
+        except Exception as e:
+            logger.error("JSON parse hatası: %s", e)
+            return "❌ Model cevabı okunamadı."
+        
+        text = data.get("response", "").strip()
+        
+        if not text:
+            logger.warning("Boş cevap (model=%s)", model_name)
+            return "Üzgünüm, cevap üretemedim."
+        
+        logger.info(f"✅ Model cevap verdi: {len(text)} karakter")
+        
+        return text
+    
+    async def generate_streaming(
+        self,
+        model_name: str,
+        prompt: str,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        num_ctx: Optional[int] = None,
+    ):
+        """
+        Streaming response generator (async generator)
+        """
+        url = f"{self.base_url}/api/generate"
+        
         temp = temperature if temperature is not None else 0.7
         num_predict = max_tokens if max_tokens is not None else 4096
         ctx = num_ctx if num_ctx is not None else 8192
@@ -137,81 +202,48 @@ class OllamaClient:
                 "temperature": float(temp),
                 "num_predict": int(num_predict),
                 "num_ctx": int(ctx),
-                # OPTIMIZED SAMPLING
                 "top_k": 40,
                 "top_p": 0.9,
                 "repeat_penalty": 1.1,
-                # CRITICAL: Stop tokens to prevent contamination
-                "stop": [
-                    # Meta tags
-                    "[USER]", "[ASSISTANT]", "[INST]", "[/INST]", "[SYSTEM]",
-                    # ChatML tags
-                    "<|im_start|>", "<|im_end|>",
-                    # Phi tags
-                    "<|user|>", "<|assistant|>", "<|system|>", "<|end|>",
-                    # Mistral tags
-                    "</s>",
-                ],
+                "stop": ["<|im_end|>"],
             },
         }
         
-        logger.debug(f"Ollama request: model={model_name}, temp={temp}, max_tokens={num_predict}")
+        logger.info(f"🔄 Streaming başladı: {model_name}")
         
         try:
-            # Extended timeout for large models
-            async with httpx.AsyncClient(timeout=90.0) as client:
-                resp = await client.post(url, json=payload)
-        except httpx.TimeoutException:
-            logger.error("Ollama timeout (model=%s)", model_name)
-            return "⏱️ Model çok yavaş yanıt verdi. Lütfen daha kısa soru sorun."
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                async with client.stream("POST", url, json=payload) as resp:
+                    if resp.status_code != 200:
+                        yield f"❌ HTTP {resp.status_code}"
+                        return
+                    
+                    async for line in resp.aiter_lines():
+                        if not line.strip():
+                            continue
+                        
+                        try:
+                            data = json.loads(line)
+                            
+                            if "response" in data:
+                                chunk = data["response"]
+                                if chunk:
+                                    yield chunk
+                            
+                            if data.get("done"):
+                                logger.info("✅ Streaming tamamlandı")
+                                yield "[DONE]"  # ← Frontend'e stream bittiğini bildir
+                                break
+                                
+                        except json.JSONDecodeError:
+                            continue
+                            
         except Exception as e:
-            logger.error("Ollama bağlantı hatası: %s", e)
-            return f"❌ Ollama'ya bağlanılamadı: {e}"
-        
-        if resp.status_code == 404:
-            logger.error("Model bulunamadı: %s", model_name)
-            return f"❌ Model '{model_name}' bulunamadı. Çözüm: ollama pull {model_name}"
-        
-        if resp.status_code != 200:
-            logger.error("Ollama HTTP %s: %s", resp.status_code, resp.text)
-            return f"❌ Ollama hatası (HTTP {resp.status_code})"
-        
-        try:
-    # Ollama bazen multi-line JSON döndürüyor, son satırı al
-            response_text = resp.text.strip()
-    
-    # Multi-line ise son satırı parse et
-            if '\n' in response_text:
-                lines = response_text.split('\n')
-        # Son boş olmayan satırı al
-                for line in reversed(lines):
-                    if line.strip():
-                        data = json.loads(line)
-                        break
-                else:
-                    data = json.loads(lines[-1])
-            else:
-                data = json.loads(response_text)
-        
-        except json.JSONDecodeError as e:
-            logger.error("JSON parse hatası: %s", e)
-            logger.error("Raw response: %s", resp.text[:500])
-            return "❌ Model cevabı okunamadı. Lütfen tekrar deneyin."
-        except Exception as e:
-            logger.error("Beklenmeyen hata: %s", e)
-            return "❌ Bir hata oluştu."
-
-        text = data.get("response", "").strip()
-        
-        if not text:
-            logger.warning("Boş cevap (model=%s)", model_name)
-            return "Üzgünüm, cevap üretemedim. Lütfen sorunuzu farklı şekilde sorun."
-        
-        logger.debug(f"Ollama response: {len(text)} chars")
-        
-        return text
+            logger.error(f"Streaming error: {e}")
+            yield f"\n\n❌ Hata: {e}"
 
 
+# Global instance (bu satır class dışında olmalı!)
 _ollama_client = OllamaClient(base_url=str(settings.llm.ollama_base_url))
 
 

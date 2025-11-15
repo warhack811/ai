@@ -298,7 +298,56 @@ async def stats_endpoint() -> StatsResponse:
 # ---------------------------------------------------------------------------
 # Direkt çalıştırma
 # ---------------------------------------------------------------------------
-
+@app.get(f"{API_PREFIX}/chat/stream")
+async def chat_stream_endpoint(
+    payload: ChatRequest,
+    _: None = Depends(rate_limiter_dependency),
+):
+    """
+    Streaming chat endpoint - Cümle cümle yazma
+    """
+    from services.llm.model_manager import _ollama_client, get_model_info
+    from services.llm.prompt_templates import get_prompt_builder
+    
+    # Model seç (şimdilik basit - ilerde model_router kullanırız)
+    model_key = "qwen"  # Veya request'ten al
+    model_info = get_model_info(model_key)
+    
+    if not model_info:
+        return StreamingResponse(
+            iter(["❌ Model bulunamadı"]),
+            media_type="text/event-stream"
+        )
+    
+    # Prompt oluştur
+    builder = get_prompt_builder(model_key, payload.mode)
+    prompt = builder.build_user_prompt(
+        user_message=payload.message,
+        context=""  # Basitleştirilmiş (ilerde context ekleriz)
+    )
+    
+    # Streaming generator
+    async def generate():
+        try:
+            async for chunk in _ollama_client.generate_streaming(
+                model_name=model_info.name,
+                prompt=prompt,
+                temperature=payload.temperature or 0.7,
+                max_tokens=payload.max_tokens or 4096,
+            ):
+                # Server-Sent Events (SSE) formatı
+                yield f"data: {chunk}\n\n"
+        except Exception as e:
+            yield f"data: ❌ Hata: {e}\n\n"
+    
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+    )
 if __name__ == "__main__":
     import uvicorn
 
