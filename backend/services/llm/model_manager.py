@@ -1,16 +1,7 @@
 """
-services/llm/model_manager.py
+services/llm/model_manager.py - İYİLEŞTİRİLMİŞ VERSİYON
 -----------------------------
-LLM modellerinin merkezi yönetimi.
-
-- config.LLMSettings üzerinden model bilgilerini okur
-- Ollama ile konuşmak için genel bir HTTP client sağlar
-- Farklı modeller (qwen, deepseek, mistral, phi) için ortak generate fonksiyonları sunar
-
-Bu katman:
-- Model adlarını / endpoint'leri tek yerde tutar
-- Sağlam hata yönetimi ve logging yapar
-- İleride farklı provider'lara (OpenAI-compatible, custom HTTP API vs.) açılmamızı kolaylaştırır
+Daha iyi varsayılan ayarlar ve hata yönetimi
 """
 
 from __future__ import annotations
@@ -27,16 +18,12 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
-# ---------------------------------------------------------------------------
-# Model Tanımı
-# ---------------------------------------------------------------------------
-
 @dataclass
 class LLMModelInfo:
-    key: str              # "qwen", "deepseek", "mistral", "phi"
-    name: str             # Ollama/sağlayıcı üzerindeki model adı
-    display_name: str     # UI için görünen ad
-    provider: str         # "ollama" | "openai-compatible" | "custom"
+    key: str
+    name: str
+    display_name: str
+    provider: str
     context_length: int
     default_temperature: float
     default_max_tokens: int
@@ -44,14 +31,11 @@ class LLMModelInfo:
 
 
 def _load_models_from_settings() -> Dict[str, LLMModelInfo]:
-    """
-    config.LLMSettings içinden tüm modelleri okuyup
-    key -> LLMModelInfo sözlüğüne çevirir.
-    """
+    """Config'den modelleri yükle."""
     llm_conf = settings.llm
-
+    
     models: Dict[str, LLMModelInfo] = {}
-
+    
     models["qwen"] = LLMModelInfo(
         key="qwen",
         name=llm_conf.qwen.name,
@@ -62,6 +46,7 @@ def _load_models_from_settings() -> Dict[str, LLMModelInfo]:
         default_max_tokens=llm_conf.qwen.default_max_tokens,
         is_primary=llm_conf.qwen.is_primary,
     )
+    
     models["deepseek"] = LLMModelInfo(
         key="deepseek",
         name=llm_conf.deepseek.name,
@@ -72,6 +57,7 @@ def _load_models_from_settings() -> Dict[str, LLMModelInfo]:
         default_max_tokens=llm_conf.deepseek.default_max_tokens,
         is_primary=llm_conf.deepseek.is_primary,
     )
+    
     models["mistral"] = LLMModelInfo(
         key="mistral",
         name=llm_conf.mistral.name,
@@ -82,6 +68,7 @@ def _load_models_from_settings() -> Dict[str, LLMModelInfo]:
         default_max_tokens=llm_conf.mistral.default_max_tokens,
         is_primary=llm_conf.mistral.is_primary,
     )
+    
     models["phi"] = LLMModelInfo(
         key="phi",
         name=llm_conf.phi.name,
@@ -92,55 +79,35 @@ def _load_models_from_settings() -> Dict[str, LLMModelInfo]:
         default_max_tokens=llm_conf.phi.default_max_tokens,
         is_primary=llm_conf.phi.is_primary,
     )
-
+    
     return models
 
 
-# Global model kaydı (config'e göre)
 _MODEL_REGISTRY: Dict[str, LLMModelInfo] = _load_models_from_settings()
 
 
-# ---------------------------------------------------------------------------
-# Ollama Client
-# ---------------------------------------------------------------------------
-
 class OllamaClient:
-    """
-    Ollama HTTP API üzerinden text generation yapan basit client.
-
-    /api/generate endpoint'i kullanılır:
-      POST /api/generate
-      {
-        "model": "qwen2.5-14b-instruct",
-        "prompt": "...",
-        "system": "...",
-        "stream": false,
-        "options": {...}
-      }
-    """
-
+    """Ollama HTTP API client."""
+    
     def __init__(self, base_url: str) -> None:
         self.base_url = base_url.rstrip("/")
-
+    
     async def list_models(self) -> Dict[str, bool]:
-        """
-        Ollama üzerinde mevcut modelleri listeler.
-        Dönüş: { "model_adı": True, ... }
-        """
+        """Mevcut modelleri listele."""
         url = f"{self.base_url}/api/tags"
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(url)
                 if resp.status_code != 200:
-                    logger.error("Ollama /tags HTTP %s: %s", resp.status_code, resp.text)
+                    logger.error("Ollama /tags HTTP %s", resp.status_code)
                     return {}
                 data = resp.json()
                 models = [m.get("name") for m in data.get("models", []) if m.get("name")]
                 return {m: True for m in models}
         except Exception as e:
-            logger.error("Ollama /tags isteği başarısız: %s", e)
+            logger.error("Ollama /tags hatası: %s", e)
             return {}
-
+    
     async def generate(
         self,
         model_name: str,
@@ -150,17 +117,14 @@ class OllamaClient:
         max_tokens: Optional[int] = None,
         num_ctx: Optional[int] = None,
     ) -> str:
-        """
-        Verilen model adıyla Ollama'dan cevap üretir.
-        Hatalı durumda anlamlı mesaj/log döner.
-        """
+        """Model ile cevap üret - İYİLEŞTİRİLMİŞ AYARLAR."""
         url = f"{self.base_url}/api/generate"
-
-        # Varsayılanları ayarla
-        temp = temperature if temperature is not None else 0.3
-        num_predict = max_tokens if max_tokens is not None else 512
-        ctx = num_ctx if num_ctx is not None else 4096
-
+        
+        # DAHA İYİ VARSAYILANLAR
+        temp = temperature if temperature is not None else 0.7  # 0.3 -> 0.7
+        num_predict = max_tokens if max_tokens is not None else 2048  # 512 -> 2048
+        ctx = num_ctx if num_ctx is not None else 8192  # 4096 -> 8192
+        
         payload = {
             "model": model_name,
             "prompt": prompt,
@@ -169,117 +133,104 @@ class OllamaClient:
                 "temperature": float(temp),
                 "num_predict": int(num_predict),
                 "num_ctx": int(ctx),
-                # Buraya gerekiyorsa top_k, top_p, repeat_penalty, vs. eklenebilir.
+                # İyileştirilmiş sampling parametreleri
+                "top_k": 40,
+                "top_p": 0.9,
+                "repeat_penalty": 1.1,
+                "stop": ["[USER]", "[ASSISTANT]", "[INST]", "[/INST]"],  # Meta tag'leri durdur
             },
         }
-
+        
         if system_prompt:
             payload["system"] = system_prompt
-
+        
+        logger.info(f"Ollama request: model={model_name}, temp={temp}, max_tokens={num_predict}")
+        
         try:
-            async with httpx.AsyncClient(timeout=settings.llm.qwen.context_length) as client:
+            # Timeout'u artır (60 saniye)
+            async with httpx.AsyncClient(timeout=60.0) as client:
                 resp = await client.post(url, json=payload)
         except httpx.TimeoutException:
-            logger.error("Ollama generate timeout (model=%s)", model_name)
-            return "⏱️ Model çok yavaş yanıt verdi (timeout)."
+            logger.error("Ollama timeout (model=%s)", model_name)
+            return "⏱️ Model çok yavaş yanıt verdi. Lütfen daha kısa soru sorun."
         except Exception as e:
-            logger.error("Ollama generate hatası (model=%s): %s", model_name, e)
-            return f"❌ Model hatası: {e}"
-
+            logger.error("Ollama bağlantı hatası: %s", e)
+            return f"❌ Ollama'ya bağlanılamadı: {e}"
+        
         if resp.status_code == 404:
-            logger.error("Ollama: model bulunamadı: %s", model_name)
+            logger.error("Model bulunamadı: %s", model_name)
             return (
-                f"❌ Model bulunamadı: '{model_name}'\n"
-                f"Lütfen 'ollama list' ile mevcut modelleri kontrol et."
+                f"❌ Model '{model_name}' bulunamadı.\n"
+                f"Çözüm: ollama pull {model_name}"
             )
-
+        
         if resp.status_code != 200:
-            logger.error(
-                "Ollama HTTP %s (model=%s): %s",
-                resp.status_code,
-                model_name,
-                resp.text,
-            )
-            return f"❌ Ollama HTTP {resp.status_code}: {resp.text}"
-
+            logger.error("Ollama HTTP %s: %s", resp.status_code, resp.text)
+            return f"❌ Ollama hatası (HTTP {resp.status_code})"
+        
         try:
             data = resp.json()
         except Exception as e:
-            logger.error("Ollama JSON parse hatası: %s", e)
-            return f"❌ Model cevabı parse edilemedi: {e}"
+            logger.error("JSON parse hatası: %s", e)
+            return "❌ Model cevabı okunamadı."
+        
+        text = data.get("response", "").strip()
+        
+        if not text:
+            logger.warning("Boş cevap (model=%s)", model_name)
+            return "Üzgünüm, cevap üretemedim. Lütfen sorunuzu farklı şekilde sorun."
+        
+        logger.info(f"Ollama response length: {len(text)} chars")
+        
+        return text
 
-        text = data.get("response") or ""
-        if not text.strip():
-            logger.warning("Ollama boş yanıt döndürdü (model=%s)", model_name)
-            return "Cevap üretilemedi."
 
-        return text.strip()
-
-
-# Global Ollama client
 _ollama_client = OllamaClient(base_url=str(settings.llm.ollama_base_url))
 
 
-# ---------------------------------------------------------------------------
-# Model Manager Ana Fonksiyonları
-# ---------------------------------------------------------------------------
-
 def get_model_info(key: str) -> Optional[LLMModelInfo]:
-    """
-    "qwen", "deepseek", "mistral", "phi" gibi anahtarlarla
-    model bilgisine ulaşmak için.
-    """
+    """Model bilgisini al."""
     return _MODEL_REGISTRY.get(key)
 
 
 def get_primary_model() -> Optional[LLMModelInfo]:
-    """
-    Varsayılan (primary) sohbet modeli.
-    Genelde qwen2.5 14B olacak.
-    """
+    """Primary modeli al."""
     for info in _MODEL_REGISTRY.values():
         if info.is_primary:
             return info
-    # Hiçbiri primary işaretli değilse, qwen'e düş
     return _MODEL_REGISTRY.get("qwen")
 
 
 def list_all_models() -> Dict[str, LLMModelInfo]:
-    """
-    Kayıtlı tüm modelleri döner.
-    """
+    """Tüm modelleri listele."""
     return dict(_MODEL_REGISTRY)
 
 
 async def test_llm_health() -> Dict[str, any]:
-    """
-    LLM katmanının genel sağlık durumunu test eder:
-    - Ollama bağlantısı
-    - Kayıtlı modellerin Ollama'da bulunup bulunmadığı
-    """
+    """LLM sağlık kontrolü."""
     available = await _ollama_client.list_models()
-
+    
     models_health = {}
     for key, info in _MODEL_REGISTRY.items():
         if info.provider != "ollama":
             models_health[key] = {
                 "status": "unknown",
-                "reason": f"provider={info.provider} için health check implemente edilmedi",
+                "reason": f"provider={info.provider}",
             }
             continue
-
+        
         exists = info.name in available
         models_health[key] = {
             "status": "ok" if exists else "missing",
             "model_name": info.name,
         }
-
+    
     status = "ok"
     if not available:
         status = "error"
     elif any(v["status"] != "ok" for v in models_health.values()):
         status = "degraded"
-
+    
     return {
         "status": status,
         "ollama_base_url": settings.llm.ollama_base_url,
@@ -294,23 +245,23 @@ async def generate_with_model(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
 ) -> str:
-    """
-    Verilen model key'i ile (qwen, deepseek, mistral, phi)
-    prompt'tan bir cevap üretir.
-
-    - Doğru provider'a göre uygun client seçer (şimdilik sadece Ollama).
-    - Ayar olarak config'teki default temperature / max_tokens değerlerini kullanır,
-      parametre verilmişse override eder.
-    """
+    """Model ile cevap üret."""
     info = get_model_info(model_key)
     if info is None:
-        logger.error("Bilinmeyen model key: %s", model_key)
+        logger.error("Bilinmeyen model: %s", model_key)
         return f"❌ Tanımsız model: {model_key}"
-
-    # Varsayılanları ayarla
+    
+    # Varsayılanları kullan
     temp = temperature if temperature is not None else info.default_temperature
     max_toks = max_tokens if max_tokens is not None else info.default_max_tokens
-
+    
+    logger.debug(
+        "Generate with model: %s, temp=%.2f, max_tokens=%d",
+        model_key,
+        temp,
+        max_toks,
+    )
+    
     if info.provider == "ollama":
         return await _ollama_client.generate(
             model_name=info.name,
@@ -320,9 +271,6 @@ async def generate_with_model(
             max_tokens=max_toks,
             num_ctx=info.context_length,
         )
-
-    # Diğer provider tipleri için ileride genişletebiliriz:
-    # - openai-compatible
-    # - custom HTTP
-    logger.error("Desteklenmeyen provider: %s (model=%s)", info.provider, info.name)
-    return f"❌ Desteklenmeyen model sağlayıcısı: {info.provider}"
+    
+    logger.error("Desteklenmeyen provider: %s", info.provider)
+    return f"❌ Desteklenmeyen provider: {info.provider}"

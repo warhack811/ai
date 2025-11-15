@@ -109,7 +109,7 @@ class LLMSettings(BaseModel):
         display_name="Phi 3.5 Mini Instruct Q4_K_M",
         provider="ollama",
         context_length=4096,
-        default_temperature=0.3,
+        default_temperature=0.7,
         default_max_tokens=1024,
         is_primary=True,    # ✅ ANA MODEL ARTIK PHI
     )
