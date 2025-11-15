@@ -1,109 +1,235 @@
 """
-services/rag_engine.py
+services/rag_engine.py - FAS 2 VERSION
 ----------------------
-RAG (Retrieval-Augmented Generation) motoru.
-
-Görev:
-- Lokal dokümanlardan (knowledge.py) uygun parçaları getir
-- (İsteğe bağlı) web'den SearxNG ile arama yap
-- Bu konteksi tek bir metin halinde birleştir
-- Ayrıca SourceInfo listesi döndür (frontend "Kaynaklar" paneli için)
+✅ Local document search integrated
+✅ Web search + Local fusion
+✅ Smart source ranking
+✅ Context optimization
 """
 
-from __future__ import annotations
+import logging
+from typing import List, Tuple, Optional
+import asyncio
 
-from typing import List, Tuple
-
-import httpx
-
-from config import get_settings
-from schemas.common import SourceInfo, SourceType
-from schemas.common import IntentLabel, ChatMode
+from schemas.common import (
+    SourceInfo, SourceType, IntentLabel, ChatMode
+)
 from services import knowledge
+from services import web_search
 
-settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Web Arama (SearxNG)
-# ---------------------------------------------------------------------------
-
-async def _web_search_searxng(
-    query: str,
-    max_results: int,
-) -> List[SourceInfo]:
+class RAGEngine:
     """
-    SearxNG ile web araması yapar, SourceInfo listesi döner.
+    Retrieval-Augmented Generation Engine
+    
+    Features:
+    - Local document search (ChromaDB)
+    - Web search (SearXNG)
+    - Multi-source fusion
+    - Smart ranking
     """
-    if not settings.web_search.enabled:
+    
+    def __init__(self):
+        self.max_context_chars = 3000  # Max RAG context
+    
+    async def build_augmented_context(
+        self,
+        query: str,
+        user_id: str,
+        use_web: bool,
+        max_sources: int,
+        intent: IntentLabel,
+        mode: ChatMode,
+    ) -> Tuple[str, List[SourceInfo]]:
+        """
+        RAG pipeline: Local docs + Web search
+        
+        Args:
+            query: Kullanıcı sorusu
+            user_id: Kullanıcı ID
+            use_web: Web araması yapılsın mı?
+            max_sources: Max kaynak sayısı
+            intent: Intent label
+            mode: Chat mode
+        
+        Returns:
+            (context_text, sources)
+        """
+        logger.info(f"RAG: query='{query[:50]}...' | web={use_web}")
+        
+        # ============================================
+        # PARALLEL SEARCH: Local + Web
+        # ============================================
+        
+        tasks = []
+        
+        # 1. Local documents (her zaman ara)
+        tasks.append(self._search_local_documents(query, user_id, max_sources))
+        
+        # 2. Web search (sadece gerekirse)
+        if use_web and self._should_use_web(query, intent, mode):
+            tasks.append(self._search_web(query, max_sources))
+        else:
+            # Boş sonuç ekle (parallel olmayan durum için)
+            tasks.append(self._empty_search())
+        
+        # Parallel çalıştır
+        local_sources, web_sources = await asyncio.gather(*tasks)
+        
+        logger.info(f"RAG results: local={len(local_sources)}, web={len(web_sources)}")
+        
+        # ============================================
+        # MERGE & RANK
+        # ============================================
+        
+        all_sources = local_sources + web_sources
+        
+        if not all_sources:
+            return "", []
+        
+        # Ranking (score'a göre sırala)
+        ranked_sources = sorted(
+            all_sources,
+            key=lambda s: s.score if s.score else 0.0,
+            reverse=True
+        )[:max_sources]
+        
+        # ============================================
+        # BUILD CONTEXT TEXT
+        # ============================================
+        
+        context_text = self._build_context_text(ranked_sources)
+        
+        logger.info(f"RAG context: {len(context_text)} chars, {len(ranked_sources)} sources")
+        
+        return context_text, ranked_sources
+    
+    async def _search_local_documents(
+        self,
+        query: str,
+        user_id: str,
+        max_results: int,
+    ) -> List[SourceInfo]:
+        """Local document search"""
+        try:
+            return knowledge.search_local_documents(
+                query=query,
+                max_results=max_results,
+                user_id=user_id,
+            )
+        except Exception as e:
+            logger.error(f"Local search error: {e}")
+            return []
+    
+    async def _search_web(
+        self,
+        query: str,
+        max_results: int,
+    ) -> List[SourceInfo]:
+        """Web search"""
+        try:
+            return await web_search.search_web_simple(
+                query=query,
+                max_results=max_results,
+            )
+        except Exception as e:
+            logger.error(f"Web search error: {e}")
+            return []
+    
+    async def _empty_search(self) -> List[SourceInfo]:
+        """Empty search result (for parallel)"""
         return []
-
-    urls = [str(u) for u in settings.web_search.searxng_urls]
-    all_results: List[SourceInfo] = []
-
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
-        ),
-        "Accept": "application/json",
-    }
-
-    languages = [settings.web_search.default_language, settings.web_search.fallback_language]
-
-    async with httpx.AsyncClient(timeout=settings.web_search.timeout_seconds, headers=headers) as client:
-        for base in urls:
-            for lang in languages:
-                try:
-                    resp = await client.get(
-                        f"{base.rstrip('/')}/search",
-                        params={
-                            "q": query,
-                            "format": "json",
-                            "language": lang,
-                            "safesearch": "0",
-                        },
-                    )
-                except Exception:
-                    continue
-
-                if resp.status_code != 200:
-                    continue
-
-                data = resp.json()
-                for item in data.get("results", []):
-                    url = item.get("url") or ""
-                    title = item.get("title") or ""
-                    content = item.get("content") or ""
-
-                    # Yasaklı domainler
-                    if any(bad in url for bad in settings.web_search.blocked_domains):
-                        continue
-
-                    snippet = content[:300] if content else ""
-                    src = SourceInfo(
-                        type=SourceType.WEB,
-                        title=title[:200] or url[:200],
-                        url=url or None,
-                        snippet=snippet,
-                        score=None,
-                        metadata={"language": lang},
-                    )
-                    all_results.append(src)
-
-                    if len(all_results) >= max_results:
-                        break
-                if len(all_results) >= max_results:
-                    break
-            if len(all_results) >= max_results:
+    
+    def _should_use_web(
+        self,
+        query: str,
+        intent: IntentLabel,
+        mode: ChatMode,
+    ) -> bool:
+        """
+        Web araması gerekli mi?
+        
+        Kriterler:
+        - Realtime keywords (hava, haber, fiyat, bugün)
+        - Research mode
+        - Web search intent
+        """
+        # Realtime keywords
+        realtime_keywords = [
+            'hava', 'weather', 'bugün', 'today', 'son', 'latest',
+            'güncel', 'current', 'news', 'haber', 'fiyat', 'price',
+            'şimdi', 'now', 'yeni', 'new',
+        ]
+        
+        query_lower = query.lower()
+        
+        if any(k in query_lower for k in realtime_keywords):
+            return True
+        
+        # Research mode
+        if mode == ChatMode.RESEARCH:
+            return True
+        
+        # Web search intent
+        if intent == IntentLabel.WEB_SEARCH:
+            return True
+        
+        return False
+    
+    def _build_context_text(self, sources: List[SourceInfo]) -> str:
+        """
+        Kaynaklardan context metni oluştur
+        
+        Format:
+        [Kaynak 1: Title]
+        Content...
+        
+        [Kaynak 2: Title]
+        Content...
+        """
+        if not sources:
+            return ""
+        
+        context_parts = []
+        current_length = 0
+        
+        for i, source in enumerate(sources, 1):
+            # Source header
+            header = f"[Kaynak {i}"
+            if source.type == SourceType.WEB:
+                header += f" - Web: {source.title}]"
+            elif source.type == SourceType.DOCUMENT:
+                header += f" - Doküman: {source.title}]"
+            else:
+                header += f": {source.title}]"
+            
+            # Content
+            content = source.snippet.strip()
+            
+            # Length check
+            part_length = len(header) + len(content) + 4  # +4 for newlines
+            
+            if current_length + part_length > self.max_context_chars:
+                # Max context aşılıyor, daha fazla ekleme
                 break
-
-    return all_results
+            
+            context_parts.append(header)
+            context_parts.append(content)
+            context_parts.append("")  # Boş satır
+            
+            current_length += part_length
+        
+        return "\n".join(context_parts)
 
 
 # ---------------------------------------------------------------------------
-# RAG Ana Fonksiyonu
+# Global instance
 # ---------------------------------------------------------------------------
+
+_rag_engine = RAGEngine()
+
 
 async def build_augmented_context(
     query: str,
@@ -114,51 +240,13 @@ async def build_augmented_context(
     mode: ChatMode,
 ) -> Tuple[str, List[SourceInfo]]:
     """
-    Pipeline'in çağırdığı ana fonksiyon.
-
-    Döndürür:
-      - context_text: LLM'e verilecek extra bilgi metni
-      - sources: Frontend için kaynak listesi
+    Global RAG function
     """
-    # 1) Lokal dokümanlardan uygun parçaları getir
-    local_sources = knowledge.search_local_chunks_simple(
+    return await _rag_engine.build_augmented_context(
         query=query,
-        max_results=min(max_sources, settings.rag.max_local_chunks),
-        collections=settings.rag.default_collections,
+        user_id=user_id,
+        use_web=use_web,
+        max_sources=max_sources,
+        intent=intent,
+        mode=mode,
     )
-
-    # 2) Web araması (isteğe bağlı)
-    web_sources: List[SourceInfo] = []
-    if use_web and settings.web_search.enabled and settings.rag.enable_for_realtime_topics:
-        try:
-            web_sources = await _web_search_searxng(
-                query=query,
-                max_results=min(max_sources, settings.rag.max_web_results),
-            )
-        except Exception:
-            web_sources = []
-
-    # 3) Tüm kaynakları birleştir
-    sources: List[SourceInfo] = []
-    sources.extend(local_sources)
-    sources.extend(web_sources)
-
-    # 4) context_text'i oluştur
-    lines: List[str] = []
-
-    if local_sources:
-        lines.append("[LOCAL DOCUMENTS]")
-        for i, s in enumerate(local_sources, start=1):
-            snippet = s.snippet or ""
-            lines.append(f"({i}) {s.title}: {snippet}")
-
-    if web_sources:
-        lines.append("\n[WEB RESULTS]")
-        for i, s in enumerate(web_sources, start=1):
-            snippet = s.snippet or ""
-            url = s.url or ""
-            lines.append(f"({i}) {s.title} - {url}\n{snippet}")
-
-    context_text = "\n".join(lines).strip()
-
-    return context_text, sources

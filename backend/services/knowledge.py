@@ -1,220 +1,301 @@
 """
-services/knowledge.py
+services/knowledge.py - FAS 2 VERSION
 ---------------------
-Lokal doküman tabanlı bilgi deposu (RAG için).
-
-Görevler:
-- Doküman indeksleme (upload_service burayı kullanıyor)
-- Chunk'lara bölme
-- Basit arama (şimdilik keyword + LIKE tabanlı)
-
-Not:
-Şimdilik embedding hesaplamıyoruz, ama 'chunks.embedding' alanı ileride
-vektör eklemek istediğinde hazır.
+✅ ChromaDB entegrasyonu
+✅ Document upload & processing
+✅ Semantic search
+✅ PDF & TXT support
 """
 
-from __future__ import annotations
-
+import logging
+from typing import List, Optional, Dict
 from datetime import datetime
-from typing import List, Tuple, Optional
+import hashlib
+from pathlib import Path
 
-from config import get_settings
 from schemas.common import SourceInfo, SourceType
-from services.db import execute, fetch_all, fetch_val
+from .vector_store import get_vector_store
 
-settings = get_settings()
-
-
-# ---------------------------------------------------------------------------
-# Yardımcı: Chunk'lama
-# ---------------------------------------------------------------------------
-
-def _split_into_chunks(text: str, max_chars: int = 800, overlap: int = 100) -> List[str]:
-    """
-    Basit metin chunk'lama:
-    - Cümle sınırlarına mümkün olduğunca saygı
-    - max_chars civarında parçalara böler
-    - overlap ile komşu chunk'lar arasında biraz çakışma bırakır
-    """
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
-    chunks: List[str] = []
-
-    current = ""
-    for para in paragraphs:
-        if len(para) > max_chars:
-            # Çok uzun paragrafları direkt bölelim
-            for i in range(0, len(para), max_chars):
-                piece = para[i : i + max_chars]
-                if current:
-                    chunks.append(current.strip())
-                    current = ""
-                chunks.append(piece.strip())
-            continue
-
-        if len(current) + len(para) + 1 <= max_chars:
-            current += (" " if current else "") + para
-        else:
-            if current:
-                chunks.append(current.strip())
-            current = para
-
-    if current:
-        chunks.append(current.strip())
-
-    # Overlap için basit bir yaklaşım: chunk'ların son k karakterini sonraki chunk'a ekleme
-    if overlap > 0 and len(chunks) > 1:
-        overlapped_chunks: List[str] = []
-        for i, ch in enumerate(chunks):
-            if i == 0:
-                overlapped_chunks.append(ch)
-            else:
-                prev = chunks[i - 1]
-                tail = prev[-overlap:]
-                merged = (tail + " " + ch).strip()
-                overlapped_chunks.append(merged)
-        return overlapped_chunks
-
-    return chunks
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Doküman İndeksleme
+# Document Upload & Processing
 # ---------------------------------------------------------------------------
 
-async def index_document(
-    document_id: str,
-    user_id: str,
+def add_document_to_knowledge(
     filename: str,
     content: str,
-    collection: str,
-    language: str,
-    size: int,
-    content_type: str,
-) -> int:
+    metadata: Optional[Dict] = None,
+    user_id: str = "default",
+) -> Dict:
     """
-    Dokümanı knowledge.db'ye kaydeder ve chunk'lara böler.
-
-    Dönüş: oluşan chunk sayısı
+    Yeni doküman ekle ve öğren
+    
+    Args:
+        filename: Dosya adı
+        content: Doküman içeriği (text)
+        metadata: Ek metadata
+        user_id: Kullanıcı ID
+    
+    Returns:
+        {
+            "doc_id": str,
+            "status": str,
+            "chunks_added": int,
+            "filename": str
+        }
     """
-    created_at = datetime.utcnow().isoformat()
-
-    # 1) documents tablosuna meta kaydet
-    execute(
-        """
-        INSERT INTO documents (
-            id, user_id, filename, collection, language, size,
-            content_type, created_at
+    logger.info(f"Processing document: {filename} ({len(content)} chars)")
+    
+    # Unique doc ID oluştur (filename + timestamp + hash)
+    timestamp = int(datetime.utcnow().timestamp())
+    content_hash = hashlib.md5(content.encode()).hexdigest()[:8]
+    doc_id = f"{user_id}_{timestamp}_{content_hash}"
+    
+    # Metadata hazırla
+    doc_metadata = {
+        "filename": filename,
+        "user_id": user_id,
+        "added_at": datetime.utcnow().isoformat(),
+        "file_size": len(content),
+        "type": _detect_file_type(filename),
+    }
+    
+    if metadata:
+        doc_metadata.update(metadata)
+    
+    # Vector store'a ekle
+    vector_store = get_vector_store()
+    
+    try:
+        result = vector_store.add_document(
+            doc_id=doc_id,
+            text=content,
+            metadata=doc_metadata,
+            chunk_size=512,  # Her chunk max 512 kelime
+            chunk_overlap=50,  # 50 kelime overlap
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?);
-        """,
-        params=[
-            document_id,
-            user_id,
-            filename,
-            collection,
-            language,
-            size,
-            content_type,
-            created_at,
-        ],
-        db="knowledge",
-    )
+        
+        logger.info(f"✓ Document added: {doc_id} ({result['chunks_added']} chunks)")
+        
+        return {
+            "doc_id": doc_id,
+            "status": "success",
+            "chunks_added": result['chunks_added'],
+            "filename": filename,
+        }
+        
+    except Exception as e:
+        logger.error(f"Document processing error: {e}", exc_info=True)
+        return {
+            "doc_id": doc_id,
+            "status": "error",
+            "error": str(e),
+            "filename": filename,
+        }
 
-    # 2) Chunk'lara böl
-    chunks = _split_into_chunks(content, max_chars=800, overlap=100)
 
-    rows = []
-    for idx, ch in enumerate(chunks):
-        rows.append(
-            (
-                document_id,
-                idx,
-                ch,
-                language,
-                created_at,
-                None,  # embedding
-            )
-        )
-
-    if rows:
-        execute(
-            """
-            INSERT INTO chunks (
-                document_id, chunk_index, text, language, created_at, embedding
-            )
-            VALUES (?, ?, ?, ?, ?, ?);
-            """,
-            seq_of_params=rows,
-            db="knowledge",
-        )
-    return len(chunks)
+def _detect_file_type(filename: str) -> str:
+    """Dosya türünü tespit et"""
+    ext = Path(filename).suffix.lower()
+    
+    if ext == '.pdf':
+        return 'pdf'
+    elif ext == '.txt':
+        return 'text'
+    elif ext in ['.doc', '.docx']:
+        return 'word'
+    elif ext in ['.py', '.js', '.cpp', '.java', '.ts']:
+        return 'code'
+    else:
+        return 'unknown'
 
 
 # ---------------------------------------------------------------------------
-# Basit Lokal Arama
+# Document Search (Semantic)
 # ---------------------------------------------------------------------------
 
-def _build_like_pattern(query: str) -> str:
-    # Çok kaba: sadece %query%
-    return f"%{query.strip()}%"
-
-
-def search_local_chunks_simple(
+def search_local_documents(
     query: str,
-    max_results: int = 8,
-    collections: Optional[List[str]] = None,
+    max_results: int = 5,
+    user_id: Optional[str] = None,
+    doc_types: Optional[List[str]] = None,
 ) -> List[SourceInfo]:
     """
-    Embedding olmadan, LIKE tabanlı basit arama.
-
-    - 'chunks.text LIKE %query%' ile eşleşen chunk'ları alır
-    - İlgili dokümanın meta verileriyle birlikte SourceInfo döner
+    Yerel dokümanlardan semantic arama
+    
+    Args:
+        query: Arama sorgusu
+        max_results: Max sonuç sayısı
+        user_id: Sadece bu kullanıcının dokümanları (opsiyonel)
+        doc_types: Sadece bu tiplerde ara (opsiyonel)
+    
+    Returns:
+        List of SourceInfo
     """
-    like = _build_like_pattern(query)
-    params: list = [like, max_results]
-
-    collection_filter = ""
-    if collections:
-        placeholders = ",".join("?" for _ in collections)
-        collection_filter = f"AND d.collection IN ({placeholders})"
-        params = [like, *collections, max_results]
-
-    sql = f"""
-        SELECT
-            c.text AS chunk_text,
-            c.document_id,
-            c.chunk_index,
-            d.filename,
-            d.collection,
-            d.language
-        FROM chunks c
-        JOIN documents d ON d.id = c.document_id
-        WHERE c.text LIKE ?
-        {collection_filter}
-        ORDER BY c.id DESC
-        LIMIT ?;
-    """
-
-    rows = fetch_all(sql, params=params, db="knowledge")
-    sources: List[SourceInfo] = []
-
-    for r in rows:
-        title = f"{r['filename']} [parça {r['chunk_index']}]"
-        snippet = r["chunk_text"][:300]
-        src = SourceInfo(
-            type=SourceType.DOCUMENT,
-            title=title,
-            url=None,
-            snippet=snippet,
-            score=None,  # şimdilik boş
-            metadata={
-                "document_id": r["document_id"],
-                "chunk_index": r["chunk_index"],
-                "collection": r["collection"],
-                "language": r["language"],
-            },
+    vector_store = get_vector_store()
+    
+    # Metadata filter (opsiyonel)
+    metadata_filter = {}
+    if user_id:
+        metadata_filter['user_id'] = user_id
+    
+    try:
+        # Semantic search
+        results = vector_store.search(
+            query=query,
+            top_k=max_results,
+            filter_metadata=metadata_filter if metadata_filter else None,
         )
-        sources.append(src)
+        
+        # SourceInfo'ya çevir
+        sources = []
+        for r in results:
+            # Relevance threshold (minimum 0.3 similarity)
+            if r['score'] < 0.3:
+                continue
+            
+            meta = r['metadata']
+            
+            # Doc type filter
+            if doc_types and meta.get('type') not in doc_types:
+                continue
+            
+            source = SourceInfo(
+                type=SourceType.DOCUMENT,
+                title=meta.get('filename', 'Unknown Document'),
+                url=None,
+                snippet=r['text'][:300],  # İlk 300 karakter
+                score=r['score'],
+                metadata={
+                    "doc_id": meta.get('doc_id'),
+                    "chunk_index": meta.get('chunk_index'),
+                    "added_at": meta.get('added_at'),
+                }
+            )
+            sources.append(source)
+        
+        logger.info(f"Found {len(sources)} relevant documents for query")
+        return sources
+        
+    except Exception as e:
+        logger.error(f"Document search error: {e}")
+        return []
 
-    return sources
+
+# ---------------------------------------------------------------------------
+# Document Management
+# ---------------------------------------------------------------------------
+
+def delete_document(doc_id: str) -> Dict:
+    """
+    Dokümanı sil
+    
+    Args:
+        doc_id: Document ID
+    
+    Returns:
+        {"status": str, "deleted_chunks": int}
+    """
+    vector_store = get_vector_store()
+    
+    try:
+        result = vector_store.delete_document(doc_id)
+        logger.info(f"✓ Document deleted: {doc_id}")
+        return result
+    except Exception as e:
+        logger.error(f"Document deletion error: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+def list_all_documents(user_id: Optional[str] = None) -> List[Dict]:
+    """
+    Tüm dokümanları listele
+    
+    Args:
+        user_id: Sadece bu kullanıcının dokümanları (opsiyonel)
+    
+    Returns:
+        List of document info
+    """
+    vector_store = get_vector_store()
+    
+    try:
+        docs = vector_store.list_documents()
+        
+        # User filter
+        if user_id:
+            docs = [d for d in docs if d.get('user_id') == user_id]
+        
+        return docs
+    except Exception as e:
+        logger.error(f"Document listing error: {e}")
+        return []
+
+
+def get_knowledge_stats() -> Dict:
+    """
+    Knowledge base istatistikleri
+    
+    Returns:
+        Statistics dict
+    """
+    vector_store = get_vector_store()
+    
+    try:
+        return vector_store.get_stats()
+    except Exception as e:
+        logger.error(f"Stats error: {e}")
+        return {
+            "total_documents": 0,
+            "total_chunks": 0,
+            "error": str(e)
+        }
+
+
+# ---------------------------------------------------------------------------
+# UTILITY: Process file content
+# ---------------------------------------------------------------------------
+
+def process_file_content(file_path: str) -> str:
+    """
+    Dosya içeriğini oku ve işle
+    
+    Supports: .txt, .pdf
+    
+    Args:
+        file_path: Dosya yolu
+    
+    Returns:
+        İşlenmiş text içeriği
+    """
+    path = Path(file_path)
+    
+    if not path.exists():
+        raise FileNotFoundError(f"File not found: {file_path}")
+    
+    ext = path.suffix.lower()
+    
+    # TXT
+    if ext == '.txt':
+        with open(path, 'r', encoding='utf-8') as f:
+            return f.read()
+    
+    # PDF
+    elif ext == '.pdf':
+        try:
+            import PyPDF2
+            
+            text = []
+            with open(path, 'rb') as f:
+                pdf_reader = PyPDF2.PdfReader(f)
+                for page in pdf_reader.pages:
+                    text.append(page.extract_text())
+            
+            return '\n\n'.join(text)
+        except ImportError:
+            raise ImportError("PyPDF2 required for PDF processing. Install: pip install PyPDF2")
+    
+    else:
+        raise ValueError(f"Unsupported file type: {ext}")

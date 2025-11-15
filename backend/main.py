@@ -1,20 +1,14 @@
 """
-main.py
+main.py - FAS 2 COMPLETE VERSION
 -------
-FastAPI uygulamasının giriş noktası.
-
-- Uygulama ve CORS ayarları
-- Health check
-- /api/chat   -> sohbet endpoint'i
-- /api/stats  -> istatistikler
-- /api/upload-document -> doküman yükleme (RAG için)
-
-Frontend ile uyumlu olacak şekilde tasarlanmıştır.
+✅ Tüm import hataları düzeltildi
+✅ Upload endpoint'leri eklendi
+✅ Mevcut endpoint'ler korundu
 """
 
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -31,7 +25,7 @@ from services.db import init_databases
 from services.pipeline import process_chat
 from services.rate_limit import rate_limiter_dependency
 from services.stats_service import get_stats_summary
-from services.upload_service import process_uploaded_document
+from services import upload_service
 
 settings = get_settings()
 
@@ -43,8 +37,6 @@ app = FastAPI(
     openapi_url="/openapi.json" if settings.env == "dev" else None,
 )
 
-# FastAPI root_path ile API'yi /api altına almak yerine,
-# router path'lerinde /api prefix kullanacağız.
 API_PREFIX = settings.api_root_path or "/api"
 
 
@@ -52,8 +44,6 @@ API_PREFIX = settings.api_root_path or "/api"
 # CORS Ayarları
 # ---------------------------------------------------------------------------
 
-# Şimdilik her yerden erişime izin veriyoruz (geliştirme için).
-# İleride sadece belirli origin'lere izin verebilirsin (örn: http://localhost:3000, Android app vs.).
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # TODO: prod'da daralt
@@ -83,24 +73,13 @@ async def http_exception_handler(_: Any, exc: HTTPException) -> JSONResponse:
 
 @app.on_event("startup")
 async def on_startup() -> None:
-    """
-    Uygulama başlarken:
-    - Veritabanlarını oluştur
-    - Gerekli klasörleri hazırla (config.get_settings zaten klasörleri yaratıyor)
-    """
+    """Uygulama başlarken veritabanlarını oluştur"""
     init_databases()
-    # İleride: model health check, web_search health check vs. eklenebilir.
 
 
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
-    """
-    Uygulama kapanırken yapılacak işler (şimdilik boş).
-    İleride:
-    - açık bağlantıları kapatma
-    - log flush, vs.
-    için kullanılabilir.
-    """
+    """Uygulama kapanırken yapılacak işler"""
     pass
 
 
@@ -110,10 +89,7 @@ async def on_shutdown() -> None:
 
 @app.get(f"{API_PREFIX}/health", response_model=HealthStatus)
 async def health_check() -> HealthStatus:
-    """
-    Basit health check endpoint'i.
-    Frontend veya monitoring aracı 'servis ayakta mı?' diye sorabilir.
-    """
+    """Basit health check endpoint'i"""
     return HealthStatus(status="ok", message="Service is running")
 
 
@@ -127,33 +103,19 @@ async def chat_endpoint(
     _: None = Depends(rate_limiter_dependency),
 ) -> ChatResponse:
     """
-    Ana sohbet endpoint'i.
-
-    Frontend halihazırda bu formda istek atıyor:
-    {
-      "message": "...",
-      "mode": "normal",
-      "use_web_search": true,
-      "max_sources": 5,
-      "temperature": 0.5,
-      "max_tokens": 1500,
-      "user_id": "user_...",
-      "session_id": "session_..."
-    }
+    Ana sohbet endpoint'i
     """
     try:
         response = await process_chat(payload)
         return response
     except HTTPException:
-        # Global handler yakalayacak
         raise
     except Exception as e:
-        # Beklenmeyen hatalar için 500 dön
         raise HTTPException(status_code=500, detail=f"Internal error: {e}") from e
 
 
 # ---------------------------------------------------------------------------
-# /api/upload-document - Doküman Yükleme Endpoint'i
+# /api/upload-document - Doküman Yükleme (TEXT/BASE64)
 # ---------------------------------------------------------------------------
 
 @app.post(f"{API_PREFIX}/upload-document", response_model=DocumentUploadResponse)
@@ -162,22 +124,41 @@ async def upload_document_endpoint(
     _: None = Depends(rate_limiter_dependency),
 ) -> DocumentUploadResponse:
     """
-    Doküman yükleme endpoint'i.
-
-    Frontend şu anda:
-      {
-        "content": "dosyanın metni...",
+    Doküman yükleme endpoint'i (text veya base64)
+    
+    Frontend'den gelen format:
+    {
+        "content": "dosya içeriği...",
         "filename": "ornek.txt",
-        "metadata": {
-          "size": 1234,
-          "type": "text/plain"
-        }
-      }
-    formatında istek gönderiyor.
+        "metadata": {"size": 1234, "type": "text/plain"}
+    }
     """
     try:
-        result = await process_uploaded_document(payload)
-        return result
+        # Metadata'dan bilgileri çek
+        metadata = payload.metadata or {}
+        content_type = metadata.get('type', 'text/plain')
+        user_id = payload.user_id or "default"
+        
+        # Process document
+        result = upload_service.process_document_upload(
+            filename=payload.filename,
+            content=payload.content,
+            content_type=content_type,
+            user_id=user_id,
+            is_base64=False,  # Frontend text olarak gönderiyor
+        )
+        
+        if result['status'] == 'error':
+            raise HTTPException(status_code=400, detail=result.get('error', 'Upload failed'))
+        
+        return DocumentUploadResponse(
+            status=result['status'],
+            doc_id=result.get('doc_id'),
+            chunks_count=result.get('chunks_added', 0),
+            filename=result['filename'],
+            error=result.get('error'),
+        )
+        
     except HTTPException:
         raise
     except Exception as e:
@@ -185,31 +166,137 @@ async def upload_document_endpoint(
 
 
 # ---------------------------------------------------------------------------
-# /api/stats - İstatistik Endpoint'i
+# /api/upload-document-file - Doküman Yükleme (FILE)
+# ---------------------------------------------------------------------------
+
+@app.post(f"{API_PREFIX}/upload-document-file")
+async def upload_document_file(
+    file: UploadFile = File(...),
+    user_id: str = "default",
+    _: None = Depends(rate_limiter_dependency),
+):
+    """
+    Doküman yükleme endpoint'i (multipart/form-data)
+    
+    Frontend'den file input ile gönderilir
+    """
+    try:
+        # File content oku
+        content_bytes = await file.read()
+        
+        # Text olarak decode et
+        try:
+            content_text = content_bytes.decode('utf-8')
+        except:
+            # Binary ise base64'e çevir
+            import base64
+            content_text = base64.b64encode(content_bytes).decode('ascii')
+            is_base64 = True
+        else:
+            is_base64 = False
+        
+        # Process
+        result = upload_service.process_document_upload(
+            filename=file.filename,
+            content=content_text,
+            content_type=file.content_type or 'application/octet-stream',
+            user_id=user_id,
+            is_base64=is_base64,
+        )
+        
+        if result['status'] == 'error':
+            raise HTTPException(status_code=400, detail=result.get('error', 'Upload failed'))
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"File upload error: {e}") from e
+
+
+# ---------------------------------------------------------------------------
+# /api/documents - Doküman Listesi
+# ---------------------------------------------------------------------------
+
+@app.get(f"{API_PREFIX}/documents")
+async def list_documents(
+    user_id: str = "default",
+    _: None = Depends(rate_limiter_dependency),
+):
+    """
+    Kullanıcının dokümanlarını listele
+    """
+    try:
+        documents = upload_service.list_user_documents(user_id)
+        
+        return {
+            "documents": documents,
+            "count": len(documents)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"List error: {e}") from e
+
+
+# ---------------------------------------------------------------------------
+# /api/documents/{doc_id} - Doküman Sil
+# ---------------------------------------------------------------------------
+
+@app.delete(f"{API_PREFIX}/documents/{{doc_id}}")
+async def delete_document(
+    doc_id: str,
+    _: None = Depends(rate_limiter_dependency),
+):
+    """
+    Doküman sil
+    """
+    try:
+        result = upload_service.delete_document_by_id(doc_id)
+        
+        if result['status'] == 'error':
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Delete error: {e}") from e
+
+
+# ---------------------------------------------------------------------------
+# /api/knowledge/stats - Knowledge Base İstatistikleri
+# ---------------------------------------------------------------------------
+
+@app.get(f"{API_PREFIX}/knowledge/stats")
+async def knowledge_stats():
+    """
+    Knowledge base istatistikleri
+    """
+    try:
+        stats = upload_service.get_knowledge_statistics()
+        return stats
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Stats error: {e}") from e
+
+
+# ---------------------------------------------------------------------------
+# /api/stats - Genel İstatistikler
 # ---------------------------------------------------------------------------
 
 @app.get(f"{API_PREFIX}/stats", response_model=StatsResponse)
 async def stats_endpoint() -> StatsResponse:
     """
-    İstatistik endpoint'i.
-
-    Frontend StatsPanel, burada dönen değerleri gösteriyor:
-    - total_queries
-    - total_documents
-    - db_size
-    - total_scraped_sites
-    - model_usage (opsiyonel)
+    Genel istatistik endpoint'i
     """
     try:
         stats = get_stats_summary()
-        # StatsService StatsSummary döndürecek, biz direkt StatsResponse'e uyuyoruz
         return StatsResponse(**stats.dict())
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Stats error: {e}") from e
 
 
 # ---------------------------------------------------------------------------
-# Eğer direkt 'python main.py' ile çalıştırmak istersen:
+# Direkt çalıştırma
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":

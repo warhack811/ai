@@ -1,7 +1,9 @@
 """
-services/llm/model_manager.py - İYİLEŞTİRİLMİŞ VERSİYON
+services/llm/model_manager.py - FAS 1 VERSION
 -----------------------------
-Daha iyi varsayılan ayarlar ve hata yönetimi
+✅ Native prompt templates integration
+✅ Better defaults
+✅ Improved error handling
 """
 
 from __future__ import annotations
@@ -9,7 +11,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import Dict, Optional
-from .prompt_templates import get_prompt_builder
 import httpx
 from schemas.common import ChatMode
 from config import get_settings
@@ -87,7 +88,7 @@ _MODEL_REGISTRY: Dict[str, LLMModelInfo] = _load_models_from_settings()
 
 
 class OllamaClient:
-    """Ollama HTTP API client."""
+    """Ollama HTTP API client with improved defaults."""
     
     def __init__(self, base_url: str) -> None:
         self.base_url = base_url.rstrip("/")
@@ -112,18 +113,21 @@ class OllamaClient:
         self,
         model_name: str,
         prompt: str,
-        system_prompt: Optional[str] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         num_ctx: Optional[int] = None,
     ) -> str:
-        """Model ile cevap üret - İYİLEŞTİRİLMİŞ AYARLAR."""
+        """
+        Model ile cevap üret - OPTIMIZED VERSION
+        
+        NOT: system_prompt artık kullanılmıyor (native templates içinde)
+        """
         url = f"{self.base_url}/api/generate"
         
-        # DAHA İYİ VARSAYILANLAR
-        temp = temperature if temperature is not None else 0.7  # 0.3 -> 0.7
-        num_predict = max_tokens if max_tokens is not None else 2048  # 512 -> 2048
-        ctx = num_ctx if num_ctx is not None else 8192  # 4096 -> 8192
+        # OPTIMIZED DEFAULTS
+        temp = temperature if temperature is not None else 0.7
+        num_predict = max_tokens if max_tokens is not None else 2048
+        ctx = num_ctx if num_ctx is not None else 8192
         
         payload = {
             "model": model_name,
@@ -133,22 +137,29 @@ class OllamaClient:
                 "temperature": float(temp),
                 "num_predict": int(num_predict),
                 "num_ctx": int(ctx),
-                # İyileştirilmiş sampling parametreleri
+                # OPTIMIZED SAMPLING
                 "top_k": 40,
                 "top_p": 0.9,
                 "repeat_penalty": 1.1,
-                "stop": ["[USER]", "[ASSISTANT]", "[INST]", "[/INST]"],  # Meta tag'leri durdur
+                # CRITICAL: Stop tokens to prevent contamination
+                "stop": [
+                    # Meta tags
+                    "[USER]", "[ASSISTANT]", "[INST]", "[/INST]", "[SYSTEM]",
+                    # ChatML tags
+                    "<|im_start|>", "<|im_end|>",
+                    # Phi tags
+                    "<|user|>", "<|assistant|>", "<|system|>", "<|end|>",
+                    # Mistral tags
+                    "</s>",
+                ],
             },
         }
         
-        if system_prompt:
-            payload["system"] = system_prompt
-        
-        logger.info(f"Ollama request: model={model_name}, temp={temp}, max_tokens={num_predict}")
+        logger.debug(f"Ollama request: model={model_name}, temp={temp}, max_tokens={num_predict}")
         
         try:
-            # Timeout'u artır (60 saniye)
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            # Extended timeout for large models
+            async with httpx.AsyncClient(timeout=90.0) as client:
                 resp = await client.post(url, json=payload)
         except httpx.TimeoutException:
             logger.error("Ollama timeout (model=%s)", model_name)
@@ -159,10 +170,7 @@ class OllamaClient:
         
         if resp.status_code == 404:
             logger.error("Model bulunamadı: %s", model_name)
-            return (
-                f"❌ Model '{model_name}' bulunamadı.\n"
-                f"Çözüm: ollama pull {model_name}"
-            )
+            return f"❌ Model '{model_name}' bulunamadı. Çözüm: ollama pull {model_name}"
         
         if resp.status_code != 200:
             logger.error("Ollama HTTP %s: %s", resp.status_code, resp.text)
@@ -180,7 +188,7 @@ class OllamaClient:
             logger.warning("Boş cevap (model=%s)", model_name)
             return "Üzgünüm, cevap üretemedim. Lütfen sorunuzu farklı şekilde sorun."
         
-        logger.info(f"Ollama response length: {len(text)} chars")
+        logger.debug(f"Ollama response: {len(text)} chars")
         
         return text
 
@@ -240,18 +248,19 @@ async def test_llm_health() -> Dict[str, any]:
 
 async def generate_with_model(
     model_key: str,
-    prompt: str,  # Artık kullanılmayacak (deprecated)
-    system_prompt: str,  # Artık kullanılmayacak (deprecated)
+    prompt: str,  # DEPRECATED (kept for compatibility)
+    system_prompt: str,  # DEPRECATED (kept for compatibility)
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
-    # YENİ PARAMETRELER:
+    # NEW PARAMETERS:
     user_message: str = "",
     context: str = "",
     mode: ChatMode = ChatMode.NORMAL,
 ) -> str:
     """
-    Model ile cevap üret - YENİ VERSİYON
-    Artık native prompt templates kullanıyor
+    Model ile cevap üret - FAS 1 VERSION
+    
+    YENİ: Native prompt templates kullanıyor
     """
     info = get_model_info(model_key)
     if info is None:
@@ -262,32 +271,38 @@ async def generate_with_model(
     temp = temperature if temperature is not None else info.default_temperature
     max_toks = max_tokens if max_tokens is not None else info.default_max_tokens
     
-    # YENİ: Prompt template builder kullan
-    from .prompt_templates import get_prompt_builder
-    builder = get_prompt_builder(model_key, mode)
+    # ============================================
+    # YENİ: NATIVE PROMPT TEMPLATES
+    # ============================================
     
-    # Eğer user_message verilmişse native template kullan
     if user_message:
+        # Native template builder kullan
+        from .prompt_templates import get_prompt_builder
+        
+        builder = get_prompt_builder(model_key, mode)
         final_prompt = builder.build_user_prompt(
             user_message=user_message,
-            context=context
+            context=context  # Temiz context (history + RAG + profile)
         )
+        
+        logger.debug(f"Using native template for {model_key}")
     else:
-        # Backward compatibility: Eski kod için
+        # Backward compatibility: eski kod için
         final_prompt = prompt
+        logger.debug(f"Using legacy prompt format")
     
-    logger.debug(
-        "Generate with model: %s, temp=%.2f, max_tokens=%d",
-        model_key,
-        temp,
-        max_toks,
+    logger.info(
+        f"🔧 Generate: {model_key.upper()} | temp={temp:.2f} | max_tokens={max_toks}"
     )
+    
+    # ============================================
+    # OLLAMA CALL
+    # ============================================
     
     if info.provider == "ollama":
         return await _ollama_client.generate(
             model_name=info.name,
             prompt=final_prompt,
-            system_prompt="",  # Artık system prompt template içinde
             temperature=temp,
             max_tokens=max_toks,
             num_ctx=info.context_length,

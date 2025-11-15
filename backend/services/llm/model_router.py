@@ -1,7 +1,8 @@
 """
-services/llm/model_router.py - DAY 2 VERSION
+services/llm/model_router.py - FAS 1 FIXED
 ----------------------------
-Complexity-based intelligent model routing
+✅ user_message parametresi eklendi
+✅ Complexity-based intelligent routing
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ _complexity_scorer = ComplexityScorer()
 
 
 # ---------------------------------------------------------------------------
-# NEW: Intelligent Model Selection
+# Intelligent Model Selection
 # ---------------------------------------------------------------------------
 
 def select_model_by_complexity(
@@ -52,7 +53,7 @@ def select_model_by_complexity(
     # Complexity skorla
     complexity = _complexity_scorer.score(query, mode, intent)
     
-    logger.info(f"Query complexity: {complexity}/10 - {_complexity_scorer.explain_score(complexity)}")
+    logger.debug(f"Query complexity: {complexity}/10")
     
     # Model seç
     all_models = list_all_models()
@@ -97,67 +98,7 @@ def select_model_by_complexity(
 
 
 # ---------------------------------------------------------------------------
-# OLD: Kept for backward compatibility
-# ---------------------------------------------------------------------------
-
-def decide_model_key_for_mode(
-    mode: ChatMode,
-    message: str,
-) -> str:
-    """
-    DEPRECATED: Use select_model_by_complexity instead
-    Kept for backward compatibility
-    """
-    all_models = list_all_models()
-
-    def has_model(key: str) -> bool:
-        return key in all_models
-
-    if mode == ChatMode.CODE:
-        if has_model("phi"):
-            return "phi"
-        if has_model("mistral"):
-            return "mistral"
-        return "qwen"
-
-    if mode == ChatMode.RESEARCH:
-        if has_model("deepseek"):
-            return "deepseek"
-        return "qwen"
-
-    if mode in (ChatMode.CREATIVE, ChatMode.FRIEND, ChatMode.TURKISH_TEACHER):
-        if has_model("qwen"):
-            return "qwen"
-        primary = get_primary_model()
-        return primary.key if primary else "qwen"
-
-    primary = get_primary_model()
-    if primary:
-        return primary.key
-
-    return "qwen"
-
-
-def resolve_model_key(
-    mode: ChatMode,
-    message: str,
-    force_model: Optional[str] = None,
-) -> str:
-    """
-    DEPRECATED: Use select_model_by_complexity instead
-    """
-    if force_model:
-        info = get_model_info(force_model)
-        if info is None:
-            logger.warning("force_model=%s tanımsız, otomatik seçime geçiliyor.", force_model)
-        else:
-            return force_model
-
-    return decide_model_key_for_mode(mode, message)
-
-
-# ---------------------------------------------------------------------------
-# NEW: Routed Generate with Complexity
+# Routed Generate with Complexity
 # ---------------------------------------------------------------------------
 
 async def route_and_generate(
@@ -169,17 +110,32 @@ async def route_and_generate(
     override_temperature: Optional[float] = None,
     override_max_tokens: Optional[int] = None,
     intent: Optional[IntentLabel] = None,
+    # YENİ PARAMETRELER (FAS 1):
+    user_message: str = "",
+    context: str = "",
+    mode: Optional[ChatMode] = None,
 ) -> Tuple[str, str]:
     """
-    UPGRADED: Complexity-based routing
+    FAS 1: Complexity-based routing with native templates
     
     Returns:
         (answer_text, used_model_key)
     """
-    mode = chat_request.mode
+    # Mode'u belirle
+    if mode is None:
+        mode = chat_request.mode
+    
+    # user_message yoksa request'ten al
+    if not user_message:
+        user_message = chat_request.message
+    
+    # context yoksa composed_prompt kullan
+    if not context:
+        context = composed_prompt
+    
     msg = chat_request.message
 
-    # NEW: Complexity-based selection
+    # Complexity-based selection
     model_key, complexity = select_model_by_complexity(
         query=msg,
         mode=mode,
@@ -207,15 +163,16 @@ async def route_and_generate(
         max_toks,
     )
 
-    # Generate
+    # Generate with native templates
     text = await generate_with_model(
         model_key=model_key,
-        prompt=composed_prompt,
-        system_prompt=system_prompt,
+        prompt=composed_prompt,  # Deprecated (backward compat)
+        system_prompt=system_prompt,  # Deprecated (backward compat)
         temperature=temp,
         max_tokens=max_toks,
-        user_message=msg,
-        context=composed_prompt,
+        # YENİ PARAMETRELER:
+        user_message=user_message,
+        context=context,
         mode=mode,
     )
 

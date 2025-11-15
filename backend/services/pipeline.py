@@ -1,7 +1,10 @@
 """
-services/pipeline.py - DAY 2 VERSION
+services/pipeline.py - FAS 1 VERSION
 --------------------
-Parallel processing + complexity-based routing + caching
+✅ Native prompt templates
+✅ Fixed memory system
+✅ Optimized context
+✅ Better performance
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ from services import chat_db
 from services.intent_detector import detect_intent
 from services.emotion_detector import analyze_emotion
 from services.llm.model_router import route_and_generate
+from services.llm.complexity_scorer import ComplexityScorer
 from services.context_builder import build_smart_context
 from services.output_cleaner import OutputCleaner
 from services.quality_validator import QualityValidator
@@ -37,15 +41,17 @@ settings = get_settings()
 # Global instances
 output_cleaner = OutputCleaner()
 quality_validator = QualityValidator()
+complexity_scorer = ComplexityScorer()
 cache = get_cache_manager()
 
 
 async def process_chat(request: ChatRequest) -> ChatResponse:
     """
-    DAY 2: OPTIMIZED PIPELINE
-    - Parallel preprocessing
-    - Complexity-based routing
-    - Smart caching
+    FAS 1: OPTIMIZED PIPELINE
+    - Native prompt templates ✅
+    - Fixed memory contamination ✅
+    - Optimized context building ✅
+    - Better performance ✅
     """
     
     user_id = request.user_id or "anonymous"
@@ -53,13 +59,14 @@ async def process_chat(request: ChatRequest) -> ChatResponse:
     
     logger.info("=" * 60)
     logger.info(f"📥 NEW REQUEST: {request.message[:80]}...")
+    logger.info(f"   User: {user_id} | Session: {session_id}")
     logger.info("=" * 60)
+    
+    start_time = datetime.utcnow()
     
     # ============================================
     # PHASE 1: PARALLEL PREPROCESSING
     # ============================================
-    
-    start_time = datetime.utcnow()
     
     async def async_intent():
         """Intent detection with cache"""
@@ -84,19 +91,37 @@ async def process_chat(request: ChatRequest) -> ChatResponse:
         return emotion_data
     
     async def async_history():
-        """Chat history fetch"""
+        """Chat history fetch - FIXED VERSION"""
         try:
-            recent = chat_db.get_session_messages(session_id, limit=3)
+            # Son 3 exchange'i getir (6 mesaj)
+            recent = chat_db.get_session_messages(session_id, limit=6)
             if recent:
-                return memory.build_short_term_history_text(user_id, session_id, recent)
+                # YENİ: Temiz format kullan (meta tag'siz)
+                return memory.build_short_term_history_text(
+                    user_id=user_id,
+                    session_id=session_id,
+                    messages=recent,
+                    max_exchanges=3  # Son 3 soru-cevap
+                )
         except Exception as e:
             logger.error(f"History error: {e}")
         return ""
     
+    async def async_profile():
+        """User profile context"""
+        try:
+            return memory.build_long_term_context_text(
+                user_id=user_id,
+                session_id=session_id,
+                last_message=None,  # Will be set later
+            )
+        except Exception as e:
+            logger.error(f"Profile error: {e}")
+        return ""
+    
     async def async_rag():
         """RAG pipeline with cache"""
-        if not request.use_web_search:
-            return "", []
+        # RAG her zaman çalışsın (use_web_search olmasa da local docs için)
         
         # Cache check
         cached = cache.get_cached_rag(request.message)
@@ -108,7 +133,7 @@ async def process_chat(request: ChatRequest) -> ChatResponse:
             result = await rag_engine.build_augmented_context(
                 query=request.message,
                 user_id=user_id,
-                use_web=True,
+                use_web=request.use_web_search,
                 max_sources=3,
                 intent=IntentLabel.QUESTION,  # Will be updated after intent detection
                 mode=request.mode,
@@ -123,18 +148,27 @@ async def process_chat(request: ChatRequest) -> ChatResponse:
     logger.info("⚡ Running parallel preprocessing...")
     parallel_start = datetime.utcnow()
     
-    intent, (sentiment, emotion, intensity, topic), chat_history, (rag_context, sources) = await asyncio.gather(
+    intent, (sentiment, emotion, intensity, topic), chat_history, profile_context, (rag_context, sources) = await asyncio.gather(
         async_intent(),
         async_emotion(),
         async_history(),
+        async_profile(),
         async_rag()
     )
     
     parallel_time = (datetime.utcnow() - parallel_start).total_seconds() * 1000
     logger.info(f"✓ Parallel preprocessing: {parallel_time:.0f}ms")
+    logger.info(f"   Intent: {intent.value} | Emotion: {emotion.value} ({intensity:.2f})")
     
     # ============================================
-    # PHASE 2: BUILD METADATA
+    # PHASE 2: COMPLEXITY SCORING
+    # ============================================
+    
+    complexity = complexity_scorer.score(request.message, request.mode, intent)
+    logger.info(f"📊 Complexity: {complexity}/10")
+    
+    # ============================================
+    # PHASE 3: BUILD METADATA
     # ============================================
     
     importance_score = float(intensity)
@@ -169,7 +203,7 @@ async def process_chat(request: ChatRequest) -> ChatResponse:
         logger.error(f"DB save error: {e}")
     
     # ============================================
-    # PHASE 3: BUILD CONTEXT
+    # PHASE 4: BUILD OPTIMIZED CONTEXT
     # ============================================
     
     system_prompt, composed_prompt = build_smart_context(
@@ -177,29 +211,35 @@ async def process_chat(request: ChatRequest) -> ChatResponse:
         mode=request.mode,
         chat_history=chat_history,
         rag_context=rag_context,
-        complexity=5,  # Will be computed by router
+        complexity=complexity,
+        profile_context=profile_context,
     )
     
     logger.info(f"📝 Context: {len(composed_prompt)} chars")
     
     # ============================================
-    # PHASE 4: MODEL GENERATION (with complexity routing)
+    # PHASE 5: MODEL GENERATION (NATIVE TEMPLATES)
     # ============================================
     
     model_start = datetime.utcnow()
     
     try:
+        # YENİ: Native template sistemini kullan
         raw_answer, model_key = await route_and_generate(
             chat_request=request,
-            composed_prompt=composed_prompt,
-            system_prompt=system_prompt,
+            composed_prompt=composed_prompt,  # Deprecated but kept for compatibility
+            system_prompt=system_prompt,  # Deprecated but kept for compatibility
             override_temperature=request.temperature or 0.7,
             override_max_tokens=request.max_tokens or 2048,
             intent=intent,  # Pass intent for better routing
+            # YENİ PARAMETRELER:
+            user_message=request.message,
+            context=composed_prompt,  # Temiz context
+            mode=request.mode,
         )
         
         model_time = (datetime.utcnow() - model_start).total_seconds() * 1000
-        logger.info(f"🤖 Model response: {model_time:.0f}ms | {len(raw_answer)} chars")
+        logger.info(f"🤖 Model: {model_key.upper()} | Time: {model_time:.0f}ms | Length: {len(raw_answer)} chars")
         
     except Exception as e:
         logger.error(f"Model error: {e}", exc_info=True)
@@ -207,7 +247,7 @@ async def process_chat(request: ChatRequest) -> ChatResponse:
         model_key = "error"
     
     # ============================================
-    # PHASE 5: OUTPUT CLEANING & VALIDATION
+    # PHASE 6: OUTPUT CLEANING & VALIDATION
     # ============================================
     
     cleaned_answer = output_cleaner.clean(raw_answer, model_key)
@@ -218,26 +258,36 @@ async def process_chat(request: ChatRequest) -> ChatResponse:
         cleaned_answer = "Üzgünüm, tatmin edici bir cevap üretemedim. Lütfen sorunuzu farklı şekilde sorar mısınız?"
         quality_score = 0.3
     
+    logger.info(f"✨ Quality score: {quality_score:.2f}")
+    
     # ============================================
-    # PHASE 6: SAFETY FILTER
+    # PHASE 7: SAFETY FILTER
     # ============================================
     
     safe_answer = cleaned_answer
     safety_level = SafetyLevel.OK
     
-    if settings.safety.enabled or (hasattr(request, 'safety_level') and request.safety_level > 0):
+    # Sansür seviyesi kontrolü
+    apply_safety = (
+        settings.safety.enabled or 
+        (hasattr(request, 'safety_level') and request.safety_level and request.safety_level > 0)
+    )
+    
+    if apply_safety:
         try:
             safe_answer, safety_level = safety_filter.apply_safety(
                 answer=cleaned_answer,
                 user_id=user_id,
                 mode=request.mode,
                 intent=intent,
+                safety_level=getattr(request, 'safety_level', 0),
             )
+            logger.info(f"🛡️ Safety level: {safety_level.value}")
         except Exception as e:
             logger.error(f"Safety filter error: {e}")
     
     # ============================================
-    # PHASE 7: SAVE ASSISTANT MESSAGE
+    # PHASE 8: SAVE ASSISTANT MESSAGE
     # ============================================
     
     assistant_meta = MessageMetadata(
@@ -265,7 +315,7 @@ async def process_chat(request: ChatRequest) -> ChatResponse:
         logger.error(f"DB save error: {e}")
     
     # ============================================
-    # PHASE 8: SIDE EFFECTS (async, non-blocking)
+    # PHASE 9: SIDE EFFECTS (async, non-blocking)
     # ============================================
     
     async def async_side_effects():
@@ -274,7 +324,7 @@ async def process_chat(request: ChatRequest) -> ChatResponse:
             mood = MoodLog(
                 user_id=user_id,
                 session_id=session_id,
-                message_id=user_msg.id,
+                message_id=user_msg.id if user_msg.id else None,
                 timestamp=datetime.utcnow(),
                 sentiment=sentiment,
                 emotion=emotion,
@@ -307,17 +357,15 @@ async def process_chat(request: ChatRequest) -> ChatResponse:
     asyncio.create_task(async_side_effects())
     
     # ============================================
-    # PHASE 9: BUILD RESPONSE
+    # PHASE 10: BUILD RESPONSE
     # ============================================
     
     total_time = (datetime.utcnow() - start_time).total_seconds() * 1000
     
     logger.info("=" * 60)
     logger.info(f"✅ RESPONSE COMPLETE")
-    logger.info(f"   Total time: {total_time:.0f}ms")
-    logger.info(f"   Model: {model_key.upper()}")
-    logger.info(f"   Quality: {quality_score:.2f}")
-    logger.info(f"   Safety: {safety_level.value}")
+    logger.info(f"   Total: {total_time:.0f}ms | Model: {model_key.upper()}")
+    logger.info(f"   Quality: {quality_score:.2f} | Safety: {safety_level.value}")
     logger.info(f"   Answer: {safe_answer[:100]}...")
     logger.info("=" * 60)
     
@@ -333,8 +381,10 @@ async def process_chat(request: ChatRequest) -> ChatResponse:
             "sentiment": sentiment.value,
             "emotion": emotion.value,
             "safety_level": safety_level.value,
+            "complexity_score": complexity,
             "quality_score": quality_score,
             "total_time_ms": total_time,
+            "model_time_ms": model_time if 'model_time' in locals() else 0,
         },
     )
     

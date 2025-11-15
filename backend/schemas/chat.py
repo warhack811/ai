@@ -1,37 +1,8 @@
 """
-schemas/chat.py
+schemas/chat.py - FAS 2 VERSION
 ----------------
-Sohbet (chat) API'si, oturum yönetimi ve doküman yükleme ile ilgili
-Pydantic şemaları.
-
-Frontend ile uyumlu olacak şekilde tasarlandı:
-- /api/chat POST body:
-    {
-      "message": "...",
-      "mode": "normal" | "research" | ...,
-      "use_web_search": true/false,
-      "max_sources": 5,
-      "temperature": 0.5,
-      "max_tokens": 1500,
-      "user_id": "user_...",
-      "session_id": "session_..."
-    }
-
-- /api/chat response:
-    {
-      "response": "...",
-      "sources": [...],
-      "timestamp": "...",
-      "mode": "...",
-      "used_model": "...",
-      "session_id": "...",
-      "metadata": {...}
-    }
-
-Ayrıca:
-- sohbet oturumu özetleri
-- sohbet geçmişi
-- doküman upload istek/cevap şemaları
+✅ DocumentUploadResponse güncellendi
+✅ Diğer şemalar korundu
 """
 
 from datetime import datetime
@@ -53,9 +24,7 @@ from .common import (
 # ---------------------------------------------------------------------------
 
 class ChatRequest(BaseModel):
-    """
-    Frontend'den /api/chat endpoint'ine gelen istek gövdesi.
-    """
+    """Frontend'den /api/chat endpoint'ine gelen istek gövdesi."""
     message: str = Field(..., description="Kullanıcının gönderdiği mesaj.")
     mode: ChatMode = Field(
         ChatMode.NORMAL,
@@ -97,11 +66,6 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     """
     /api/chat cevabı.
-
-    Frontend şu alanları kullanacak:
-    - response (ana cevap metni)
-    - sources (kaynak listesi)
-    - timestamp (cevap zamanı)
     """
     response: str = Field(..., description="Asistanın cevabı (markdown destekli).")
     sources: List[SourceInfo] = Field(
@@ -112,8 +76,6 @@ class ChatResponse(BaseModel):
         default_factory=datetime.utcnow,
         description="UTC zaman damgası."
     )
-
-    # Ek meta alanlar (frontend isterse kullanır)
     mode: ChatMode = Field(
         default=ChatMode.NORMAL,
         description="Bu cevap hangi modda üretildi?"
@@ -137,10 +99,7 @@ class ChatResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 class ChatSessionSummary(BaseModel):
-    """
-    Sohbet oturumlarının listelenmesi için özet bilgi.
-    /api/sessions gibi endpoint'lerde kullanılabilir.
-    """
+    """Sohbet oturumlarının listelenmesi için özet bilgi."""
     session_id: str
     title: Optional[str] = Field(
         default=None,
@@ -148,20 +107,14 @@ class ChatSessionSummary(BaseModel):
     )
     created_at: datetime
     updated_at: datetime
-
-    # İstatistikler
     message_count: int = 0
     has_web_messages: bool = False
     has_documents: bool = False
-
-    # İleride kategorileme için
     tags: List[str] = Field(default_factory=list)
 
 
 class ChatSessionDetail(BaseModel):
-    """
-    Tek bir sohbet oturumunun detaylı bilgisi.
-    """
+    """Tek bir sohbet oturumunun detaylı bilgisi."""
     session: ChatSessionSummary
     messages: List[ChatSourceAnnotatedMessage] = Field(
         default_factory=list,
@@ -170,22 +123,17 @@ class ChatSessionDetail(BaseModel):
 
 
 class ChatHistoryResponse(BaseModel):
-    """
-    /api/sessions/{id} gibi endpoint'ler için standart cevap.
-    """
+    """/api/sessions/{id} gibi endpoint'ler için standart cevap."""
     session: ChatSessionSummary
     messages: List[ChatMessage] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
-# Doküman yükleme (RAG için)
+# Doküman yükleme (RAG için) - FAS 2 UPDATED
 # ---------------------------------------------------------------------------
 
 class DocumentMetadata(BaseModel):
-    """
-    Yüklenen doküman hakkında ek meta veriler.
-    Ör: dosya boyutu, mime-type, koleksiyon etiketi (tarih, hukuk, kişisel vs.)
-    """
+    """Yüklenen doküman hakkında ek meta veriler."""
     size: Optional[int] = Field(
         default=None,
         description="Dosya boyutu (byte cinsinden)."
@@ -207,9 +155,13 @@ class DocumentMetadata(BaseModel):
 class DocumentUploadRequest(BaseModel):
     """
     /api/upload-document için istek gövdesi.
-    Frontend şu anda:
-      { content: text, filename: file.name, metadata: { size, type } }
-    formatında gönderiyor.
+    
+    Frontend format:
+    {
+        "content": "dosya içeriği...",
+        "filename": "ornek.txt",
+        "metadata": {"size": 1234, "type": "text/plain"}
+    }
     """
     content: str = Field(..., description="Dokümanın ham metin içeriği.")
     filename: str = Field(..., description="Orijinal dosya adı.")
@@ -222,28 +174,39 @@ class DocumentUploadRequest(BaseModel):
 
 class DocumentUploadResponse(BaseModel):
     """
-    /api/upload-document cevabı.
+    /api/upload-document cevabı - FAS 2 UPDATED
+    
+    Backend'den dönen format:
+    {
+        "status": "success" | "error",
+        "doc_id": "doc_123...",
+        "chunks_count": 15,
+        "filename": "ornek.txt",
+        "error": "..." (if error)
+    }
     """
-    document_id: str = Field(..., description="Kaydedilen dokümanın benzersiz id'si.")
-    chunks_created: int = Field(
-        ...,
-        description="Bu dokümandan oluşturulan metin parçacığı (chunk) sayısı."
+    status: str = Field(..., description="Upload durumu (success/error)")
+    doc_id: Optional[str] = Field(
+        default=None,
+        description="Kaydedilen dokümanın benzersiz id'si."
     )
-    collection: str = Field(..., description="Dokümanın ait olduğu koleksiyon adı.")
-    message: str = Field(
-        default="Doküman başarıyla yüklendi ve indekse eklendi.",
-        description="Kullanıcıya gösterilecek kısa mesaj."
+    chunks_count: Optional[int] = Field(
+        default=None,
+        description="Bu dokümandan oluşturulan chunk sayısı."
+    )
+    filename: str = Field(..., description="Dosya adı")
+    error: Optional[str] = Field(
+        default=None,
+        description="Hata mesajı (eğer status=error ise)"
     )
 
 
 # ---------------------------------------------------------------------------
-# /api/stats için şema (common.StatsSummary kullanarak)
+# /api/stats için şema
 # ---------------------------------------------------------------------------
 
 class StatsResponse(StatsSummary):
     """
     /api/stats endpoint'inde döneceğimiz model.
-    Şimdilik StatsSummary'i direkt extend ediyoruz,
-    gerekirse backend'e özel alanlar ekleyebiliriz.
     """
     pass
