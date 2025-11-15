@@ -14,7 +14,7 @@ eklenebilir, ancak pipeline tarafındaki API aynı kalır.
 """
 
 from __future__ import annotations
-
+import asyncio
 import re
 from typing import Tuple
 
@@ -141,3 +141,11 @@ def detect_intent(message: str, mode: ChatMode) -> IntentLabel:
 
     # Varsayılan
     return IntentLabel.UNKNOWN
+async def detect_intent_async(message: str, mode: ChatMode) -> IntentLabel:
+    """
+    Async version of detect_intent
+    Parallel processing için
+    """
+    # Zaten hızlı bir fonksiyon, basit async wrap yeterli
+    return await asyncio.to_thread(detect_intent, message, mode)
+    

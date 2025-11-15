@@ -91,6 +91,7 @@ class ChatRequest(BaseModel):
         default=None,
         description="Sohbet oturum id'si. Gönderilmezse backend yeni bir session oluşturabilir."
     )
+    safety_level: int = Field(default=0, ge=0, le=2)  # 0=sansürsüz, 1=dengeli, 2=güvenli
 
 
 class ChatResponse(BaseModel):

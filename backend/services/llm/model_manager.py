@@ -9,9 +9,9 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import Dict, Optional
-
+from .prompt_templates import get_prompt_builder
 import httpx
-
+from schemas.common import ChatMode
 from config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -240,12 +240,19 @@ async def test_llm_health() -> Dict[str, any]:
 
 async def generate_with_model(
     model_key: str,
-    prompt: str,
-    system_prompt: Optional[str] = None,
+    prompt: str,  # Artık kullanılmayacak (deprecated)
+    system_prompt: str,  # Artık kullanılmayacak (deprecated)
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
+    # YENİ PARAMETRELER:
+    user_message: str = "",
+    context: str = "",
+    mode: ChatMode = ChatMode.NORMAL,
 ) -> str:
-    """Model ile cevap üret."""
+    """
+    Model ile cevap üret - YENİ VERSİYON
+    Artık native prompt templates kullanıyor
+    """
     info = get_model_info(model_key)
     if info is None:
         logger.error("Bilinmeyen model: %s", model_key)
@@ -254,6 +261,20 @@ async def generate_with_model(
     # Varsayılanları kullan
     temp = temperature if temperature is not None else info.default_temperature
     max_toks = max_tokens if max_tokens is not None else info.default_max_tokens
+    
+    # YENİ: Prompt template builder kullan
+    from .prompt_templates import get_prompt_builder
+    builder = get_prompt_builder(model_key, mode)
+    
+    # Eğer user_message verilmişse native template kullan
+    if user_message:
+        final_prompt = builder.build_user_prompt(
+            user_message=user_message,
+            context=context
+        )
+    else:
+        # Backward compatibility: Eski kod için
+        final_prompt = prompt
     
     logger.debug(
         "Generate with model: %s, temp=%.2f, max_tokens=%d",
@@ -265,8 +286,8 @@ async def generate_with_model(
     if info.provider == "ollama":
         return await _ollama_client.generate(
             model_name=info.name,
-            prompt=prompt,
-            system_prompt=system_prompt,
+            prompt=final_prompt,
+            system_prompt="",  # Artık system prompt template içinde
             temperature=temp,
             max_tokens=max_toks,
             num_ctx=info.context_length,

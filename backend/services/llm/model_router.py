@@ -1,11 +1,7 @@
 """
-services/llm/model_router.py
+services/llm/model_router.py - DAY 2 VERSION
 ----------------------------
-Farklı LLM modelleri arasında seçim yapan yönlendirici katman.
-
-- ChatMode ve mesajın doğasına göre uygun modeli seçer
-- Gerekirse force_model ile zorla model seçilebilir (debug / ayar için)
-- model_manager.generate_with_model'i kullanarak cevap üretir
+Complexity-based intelligent model routing
 """
 
 from __future__ import annotations
@@ -13,8 +9,9 @@ from __future__ import annotations
 import logging
 from typing import Optional, Tuple
 
-from schemas.common import ChatMode
+from schemas.common import ChatMode, IntentLabel
 from schemas.chat import ChatRequest
+from .complexity_scorer import ComplexityScorer
 from .model_manager import (
     LLMModelInfo,
     generate_with_model,
@@ -25,9 +22,82 @@ from .model_manager import (
 
 logger = logging.getLogger(__name__)
 
+# Global complexity scorer
+_complexity_scorer = ComplexityScorer()
+
 
 # ---------------------------------------------------------------------------
-# Model Seçim Mantığı
+# NEW: Intelligent Model Selection
+# ---------------------------------------------------------------------------
+
+def select_model_by_complexity(
+    query: str,
+    mode: ChatMode,
+    intent: Optional[IntentLabel] = None,
+    force_model: Optional[str] = None,
+) -> Tuple[str, int]:
+    """
+    Complexity-based model selection
+    
+    Returns:
+        (model_key, complexity_score)
+    """
+    # Force model varsa direkt kullan
+    if force_model:
+        info = get_model_info(force_model)
+        if info:
+            return force_model, 5  # Default complexity
+        logger.warning(f"Force model {force_model} bulunamadı, otomatik seçim yapılıyor")
+    
+    # Complexity skorla
+    complexity = _complexity_scorer.score(query, mode, intent)
+    
+    logger.info(f"Query complexity: {complexity}/10 - {_complexity_scorer.explain_score(complexity)}")
+    
+    # Model seç
+    all_models = list_all_models()
+    
+    if complexity <= 3:
+        # Basit sorular - Phi
+        if "phi" in all_models:
+            return "phi", complexity
+        elif "mistral" in all_models:
+            return "mistral", complexity
+        else:
+            return "qwen", complexity
+    
+    elif complexity <= 6:
+        # Orta sorular - Mistral
+        if "mistral" in all_models:
+            return "mistral", complexity
+        elif "phi" in all_models:
+            return "phi", complexity
+        else:
+            return "qwen", complexity
+    
+    elif complexity <= 8:
+        # Karmaşık sorular - Qwen
+        if "qwen" in all_models:
+            return "qwen", complexity
+        elif "mistral" in all_models:
+            return "mistral", complexity
+        else:
+            primary = get_primary_model()
+            return primary.key if primary else "qwen", complexity
+    
+    else:
+        # Çok karmaşık - DeepSeek (reasoning)
+        if "deepseek" in all_models:
+            return "deepseek", complexity
+        elif "qwen" in all_models:
+            return "qwen", complexity
+        else:
+            primary = get_primary_model()
+            return primary.key if primary else "qwen", complexity
+
+
+# ---------------------------------------------------------------------------
+# OLD: Kept for backward compatibility
 # ---------------------------------------------------------------------------
 
 def decide_model_key_for_mode(
@@ -35,15 +105,8 @@ def decide_model_key_for_mode(
     message: str,
 ) -> str:
     """
-    Mod ve mesaj içeriğine göre hangi modelin kullanılacağını belirler.
-
-    Basit ilk versiyon:
-    - code          -> phi (varsa) yoksa mistral
-    - research      -> deepseek (zor sorular, mantık ağırlıklı)
-    - creative      -> qwen
-    - turkish_teacher -> qwen
-    - friend        -> qwen
-    - normal / teacher / diğer -> qwen
+    DEPRECATED: Use select_model_by_complexity instead
+    Kept for backward compatibility
     """
     all_models = list_all_models()
 
@@ -65,16 +128,13 @@ def decide_model_key_for_mode(
     if mode in (ChatMode.CREATIVE, ChatMode.FRIEND, ChatMode.TURKISH_TEACHER):
         if has_model("qwen"):
             return "qwen"
-        # Qwen yoksa en azından primary'yi kullan
         primary = get_primary_model()
         return primary.key if primary else "qwen"
 
-    # Diğer modlar: NORMAL, TEACHER, vs.
     primary = get_primary_model()
     if primary:
         return primary.key
 
-    # Son çare
     return "qwen"
 
 
@@ -84,8 +144,7 @@ def resolve_model_key(
     force_model: Optional[str] = None,
 ) -> str:
     """
-    Eğer force_model belirtilmişse onu kullanır,
-    aksi takdirde decide_model_key_for_mode ile seçim yapar.
+    DEPRECATED: Use select_model_by_complexity instead
     """
     if force_model:
         info = get_model_info(force_model)
@@ -98,7 +157,7 @@ def resolve_model_key(
 
 
 # ---------------------------------------------------------------------------
-# Yönlendirilmiş Generate
+# NEW: Routed Generate with Complexity
 # ---------------------------------------------------------------------------
 
 async def route_and_generate(
@@ -109,21 +168,28 @@ async def route_and_generate(
     force_model: Optional[str] = None,
     override_temperature: Optional[float] = None,
     override_max_tokens: Optional[int] = None,
+    intent: Optional[IntentLabel] = None,
 ) -> Tuple[str, str]:
     """
-    ChatRequest + hazır prompt + system prompt alır,
-    uygun model key'ini seçer ve generate_with_model çağırır.
-
-    Dönüş:
-      (cevap_metni, kullanılan_model_key)
+    UPGRADED: Complexity-based routing
+    
+    Returns:
+        (answer_text, used_model_key)
     """
     mode = chat_request.mode
     msg = chat_request.message
 
-    model_key = resolve_model_key(mode, msg, force_model=force_model)
+    # NEW: Complexity-based selection
+    model_key, complexity = select_model_by_complexity(
+        query=msg,
+        mode=mode,
+        intent=intent,
+        force_model=force_model,
+    )
+    
     info: Optional[LLMModelInfo] = get_model_info(model_key)
 
-    # Temperature / max_tokens ayarları:
+    # Temperature / max_tokens
     temp = override_temperature
     max_toks = override_max_tokens
 
@@ -133,20 +199,24 @@ async def route_and_generate(
         if max_toks is None:
             max_toks = info.default_max_tokens
 
-    logger.debug(
-        "Model router seçimi: mode=%s, model=%s, temp=%.2f, max_tokens=%s",
-        mode,
-        model_key,
+    logger.info(
+        "🎯 Routed to: %s (complexity=%d/10) | temp=%.2f, max_tokens=%s",
+        model_key.upper(),
+        complexity,
         temp if temp is not None else -1,
         max_toks,
     )
 
+    # Generate
     text = await generate_with_model(
         model_key=model_key,
         prompt=composed_prompt,
         system_prompt=system_prompt,
         temperature=temp,
         max_tokens=max_toks,
+        user_message=msg,
+        context=composed_prompt,
+        mode=mode,
     )
 
     return text, model_key

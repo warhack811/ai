@@ -14,7 +14,8 @@ Bu sayede:
 """
 
 from __future__ import annotations
-
+import asyncio
+from typing import Tuple
 import re
 from typing import Tuple
 
@@ -140,3 +141,10 @@ def analyze_emotion(message: str) -> Tuple[SentimentLabel, EmotionLabel, float, 
         final_intensity = 0.0
 
     return sentiment, best_emotion, final_intensity, topic
+async def analyze_emotion_async(message: str) -> Tuple[SentimentLabel, EmotionLabel, float, str]:
+    """
+    Async version of analyze_emotion
+    Parallel processing için
+    """
+    # Zaten hızlı bir fonksiyon, basit async wrap yeterli
+    return await asyncio.to_thread(analyze_emotion, message)

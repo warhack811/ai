@@ -126,7 +126,17 @@ class RagSettings(BaseModel):
 
     # Varsayılan koleksiyonlar (knowledge.search_local_chunks_simple için)
     default_collections: list[str] = Field(default_factory=lambda: ["general"])
-
+    # YENİ: Model bazlı dinamik context
+    context_sizes: dict = Field(default_factory=lambda: {
+        "phi": {"max_history": 2, "max_chunks": 2, "max_web": 2},
+        "mistral": {"max_history": 3, "max_chunks": 3, "max_web": 3},
+        "qwen": {"max_history": 5, "max_chunks": 5, "max_web": 4},
+        "deepseek": {"max_history": 6, "max_chunks": 6, "max_web": 5},
+    })
+    
+    def get_context_size(self, model_key: str) -> dict:
+        """Model için optimal context size"""
+        return self.context_sizes.get(model_key, self.context_sizes["qwen"])
 # ---------------------------------------------------------------------------
 # Web Search Ayarları
 # ---------------------------------------------------------------------------
