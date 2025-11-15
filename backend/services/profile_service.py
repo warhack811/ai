@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Mapping, Any
 
 from schemas.profile import (
     UserProfile,
@@ -29,33 +29,36 @@ from services.db import fetch_one, execute
 # Yardımcı Dönüşümler
 # ---------------------------------------------------------------------------
 
-def _row_to_profile(row: dict) -> UserProfile:
+def _row_to_profile(row: Mapping[str, Any]) -> UserProfile:
+    # sqlite3.Row -> normal dict
+    data = dict(row)
+
     interests = []
-    if row.get("interests"):
+    if data.get("interests"):
         try:
-            interests = json.loads(row["interests"])
+            interests = json.loads(data["interests"])
         except Exception:
             interests = []
 
     prefs = UserPreference()
-    if row.get("preferences_json"):
+    if data.get("preferences_json"):
         try:
-            prefs = UserPreference.parse_raw(row["preferences_json"])
+            prefs = UserPreference.parse_raw(data["preferences_json"])
         except Exception:
             prefs = UserPreference()
 
     profile = UserProfile(
-        user_id=row["user_id"],
-        display_name=row.get("display_name"),
-        created_at=datetime.fromisoformat(row["created_at"]),
-        updated_at=datetime.fromisoformat(row["updated_at"]),
-        age=row.get("age"),
-        gender=row.get("gender"),
-        location=row.get("location"),
-        occupation=row.get("occupation"),
+        user_id=data["user_id"],
+        display_name=data.get("display_name"),
+        created_at=datetime.fromisoformat(data["created_at"]),
+        updated_at=datetime.fromisoformat(data["updated_at"]),
+        age=data.get("age"),
+        gender=data.get("gender"),
+        location=data.get("location"),
+        occupation=data.get("occupation"),
         interests=interests,
         preferences=prefs,
-        notes=row.get("notes"),
+        notes=data.get("notes"),
         goals=[],
     )
     return profile

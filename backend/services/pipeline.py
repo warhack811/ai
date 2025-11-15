@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from typing import List, Optional, Tuple
-
+import re  # dosyanın en üstünde varsa tekrar ekleme, yoksa ekle
 from config import get_settings
 from schemas.chat import ChatRequest, ChatResponse
 from schemas.common import (
@@ -60,22 +60,33 @@ settings = get_settings()
 def _build_global_system_prompt(mode: ChatMode) -> str:
     """
     Tüm modeller için ortak, üst seviye sistem prompt'u.
-    Model-specific promptlar (Qwen/DeepSeek/Mistral) halen model tarafında
-    kullanılabilir ama bu sistem prompt genel davranışı belirler.
+    Türkçe odaklı asistan davranışını burada tanımlar.
     """
     base = """
-You are a personal AI assistant with strong Turkish language skills.
+    You are a PERSONAL AI ASSISTANT whose DEFAULT LANGUAGE IS TURKISH (Türkçe).
 
-Core rules:
-- If the user writes in Turkish, always answer in natural, fluent Turkish.
-- Be honest. If you are not sure about something, say that you are not certain.
-- Prefer concise, clear explanations. Use bullet points and examples when helpful.
-- Avoid hallucinating facts, especially for dates, numbers, or specific names.
-- For code, use fenced code blocks (```language).
-- For emotional topics, be empathetic and respectful.
-- You may use any provided context (chat history, documents, web results, memories).
-Do not mention internal implementation details.
-""".strip()
+    LANGUAGE RULES (VERY IMPORTANT):
+    - If the user writes in Turkish, you MUST answer in natural, fluent Turkish.
+    - If the user writes in another language BUT DOES NOT EXPLICITLY ASK for that language,
+      you STILL answer in Turkish and only translate or quote short phrases if needed.
+    - Only answer in English (or another language) if the user CLEARLY asks:
+      e.g. "answer in English", "please respond in German", etc.
+    - Even when using web search or documents in English, you must EXPLAIN them in Turkish.
+
+    GENERAL RULES:
+    - Do NOT include meta comments like "User can continue the conversation in Turkish."
+      or "Let's continue the conversation in Turkish." Speak directly to the user.
+    - Do NOT include training-style tags like [USER], [ASSISTANT], [INST], unless
+      the user explicitly asks for that format. Just give a normal assistant answer.
+    - Be honest. If you are not sure about something, say that you are not certain.
+    - Prefer concise, clear explanations. Use bullet points and examples when helpful.
+    - Avoid hallucinating facts, especially for dates, numbers, or specific names.
+    - For code, use fenced code blocks (```language).
+    - For emotional topics, be empathetic and respectful.
+    - You may use any provided context (chat history, documents, web results, memories).
+      Do not mention internal implementation details.
+    - Cevaplarında gerektiğinde nazik ve abartısız emoji kullanabilirsin (😊, 👍 gibi), ama aşırıya kaçma.
+    """.strip()
 
     if mode == ChatMode.RESEARCH:
         extra = """
@@ -122,7 +133,40 @@ Mode: TURKISH TEACHER
         return base + "\n\n" + extra
 
     return base
+def clean_model_output(text: str) -> str:
+    """
+    Modelin cevabından gereksiz meta kısımları temizler:
+    - 'User can continue the conversation in Turkish.'
+    - 'Let's continue the conversation in Turkish.'
+    - [USER], [ASSISTANT], [INST] gibi eğitim tag'leri
+    """
 
+    if not text:
+        return text
+
+    # 1) Sık çıkan meta cümleleri direkt sil
+    patterns_to_remove = [
+        r"\[User can continue the conversation in Turkish\.\]",
+        r"User can continue the conversation in Turkish\.",
+        r"Let'?s continue the conversation in Turkish\.",
+    ]
+
+    cleaned = text
+    for pat in patterns_to_remove:
+        cleaned = re.sub(pat, "", cleaned, flags=re.IGNORECASE)
+
+    # 2) Başta/sonda kalan eğitim tag'lerini temizle
+    # Örn: [USER] ... , [ASSISTANT] ...
+    cleaned = re.sub(r"\[USER\]", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\[ASSISTANT\]", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\[INST\]", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\[/INST\]", "", cleaned, flags=re.IGNORECASE)
+
+    # 3) Çoklu boşlukları sadeleştir
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+
+    return cleaned.strip()
 
 def _compose_final_prompt(
     user_message: str,
@@ -132,16 +176,6 @@ def _compose_final_prompt(
     mode: ChatMode,
     intent: IntentLabel,
 ) -> str:
-    """
-    LLM'e gönderilecek tek büyük prompt'u oluşturur.
-
-    Bölümler:
-    - MODE & INTENT özeti
-    - CHAT HISTORY (özet)
-    - LONG-TERM MEMORY / USER PROFILE
-    - KNOWLEDGE (documents + web)
-    - CURRENT MESSAGE
-    """
     parts: List[str] = []
 
     parts.append(f"[MODE] {mode.value}")
@@ -160,6 +194,8 @@ def _compose_final_prompt(
     parts.append("\n[ASSISTANT RESPONSE]\n")
 
     return "\n".join(parts)
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +277,11 @@ async def process_chat(request: ChatRequest) -> ChatResponse:
         logger.error("RAG context hatası: %s", e)
         rag_context_text = ""
         sources = []
-
+        # DEBUG: Şimdilik tüm ek bağlamları kapat (geçmiş, hafıza, RAG)
+    chat_history_text = ""
+    memory_context_text = ""
+    rag_context_text = ""
+    sources = []
     # 5) Final prompt'u oluştur
     system_prompt = _build_global_system_prompt(request.mode)
     composed_prompt = _compose_final_prompt(
@@ -287,6 +327,21 @@ async def process_chat(request: ChatRequest) -> ChatResponse:
         logger.error("Safety filtresi hatası: %s", e)
         safe_answer = refined_answer
         safety_level = SafetyLevel.OK
+        # 8) Safety filtresi (şimdilik yumuşak mod)
+    try:
+        safe_answer, safety_level = safety_filter.apply_safety(
+            answer=refined_answer,
+            user_id=user_id,
+            mode=request.mode,
+            intent=intent,
+        )
+    except Exception as e:
+        logger.error("Safety filtresi hatası: %s", e)
+        safe_answer = refined_answer
+        safety_level = SafetyLevel.OK
+
+    # 8.5) Model çıktısını temizle (meta tag'ler, İngilizce meta cümleler vs.)
+    safe_answer = clean_model_output(safe_answer)
 
     # 9) Asistan mesajını DB'ye kaydet
     assistant_meta = MessageMetadata(

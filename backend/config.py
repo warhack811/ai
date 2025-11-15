@@ -13,7 +13,7 @@ Pydantic 2.x ile uyumlu, BaseModel tabanlı config.
 from __future__ import annotations
 
 import os
-from functools import lru_cache
+from functools import lru_cache 
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -84,7 +84,7 @@ class LLMSettings(BaseModel):
         context_length=8192,
         default_temperature=0.5,
         default_max_tokens=2048,
-        is_primary=True,
+        is_primary=False,   # 🔵 Qwen artık primary değil
     )
     deepseek: SingleLLMModelSettings = SingleLLMModelSettings(
         name=os.getenv("LLM_DEEPSEEK_NAME", "deepseek-r1-8b-uncensored-q4_k_m"),
@@ -102,7 +102,7 @@ class LLMSettings(BaseModel):
         context_length=4096,
         default_temperature=0.5,
         default_max_tokens=1024,
-        is_primary=False,
+        is_primary=False,   # Mistral da primary DEĞİL
     )
     phi: SingleLLMModelSettings = SingleLLMModelSettings(
         name=os.getenv("LLM_PHI_NAME", "phi-3.5-mini-instruct-q4_k_m"),
@@ -111,9 +111,21 @@ class LLMSettings(BaseModel):
         context_length=4096,
         default_temperature=0.3,
         default_max_tokens=1024,
-        is_primary=False,
+        is_primary=True,    # ✅ ANA MODEL ARTIK PHI
     )
 
+class RagSettings(BaseModel):
+    # Gerçek zamanlı konular için web aramasını kullan
+    enable_for_realtime_topics: bool = True
+
+    # Lokal dokümanlardan maksimum chunk sayısı
+    max_local_chunks: int = 8
+
+    # Web sonuçları için maksimum sonuç sayısı
+    max_web_results: int = 5
+
+    # Varsayılan koleksiyonlar (knowledge.search_local_chunks_simple için)
+    default_collections: list[str] = Field(default_factory=lambda: ["general"])
 
 # ---------------------------------------------------------------------------
 # Web Search Ayarları
@@ -124,6 +136,21 @@ class WebSearchSettings(BaseModel):
     searxng_urls: list[str] = Field(
         default_factory=lambda: [os.getenv("SEARXNG_URL", "http://localhost:8888")]
     )
+    default_language: str = "tr"
+
+    # RAG + web_search modüllerinin beklediği alanlar:
+    fallback_language: str = "en"
+    timeout_seconds: float = 10.0
+    blocked_domains: list[str] = Field(
+        default_factory=lambda: [
+            "facebook.com",
+            "twitter.com",
+            "instagram.com",
+            "tiktok.com",
+            "pinterest.com",
+        ]
+    )
+
     default_language: str = "tr"
 
 
@@ -141,8 +168,11 @@ class MemorySettings(BaseModel):
 # ---------------------------------------------------------------------------
 
 class SafetySettings(BaseModel):
-    enabled: bool = False  # Sansürsüz başlangıç
+    enabled: bool = False
     profile: Literal["uncensored", "balanced", "safe"] = "uncensored"
+
+    # 'Yumuşak' uyarı mesajlarını aç/kapat
+    soft_guardrails: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +203,7 @@ class Settings(BaseModel):
     memory: MemorySettings = MemorySettings()
     safety: SafetySettings = SafetySettings()
     rate_limit: RateLimitSettings = RateLimitSettings()
-
+    rag: RagSettings = RagSettings()
     class Config:
         arbitrary_types_allowed = True
 

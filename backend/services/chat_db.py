@@ -1,8 +1,5 @@
-"""
-services/chat_db.py
--------------------
-Sohbet, mood (duygu günlüğü) ve temel istatistikler için
-SQLite tabanlı veri erişim katmanı.
+""" services/chat_db.py -------------------
+Sohbet, mood (duygu günlüğü) ve temel istatistikler için SQLite tabanlı veri erişim katmanı.
 
 Tablolar:
 - chat_messages (services.db.init_chat_db içinde oluşturuluyor)
@@ -13,14 +10,12 @@ Tablolar:
 Bu modül:
 - mesaj kaydetme / okuma
 - mood log kaydetme / okuma
-- basit istatistik sorguları
-için kullanılacak.
+- basit istatistik sorguları için kullanılacak.
 """
-
 from __future__ import annotations
 
 from datetime import datetime, date
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Mapping, Any
 
 from schemas.common import ChatMessage, MessageMetadata, Role
 from schemas.profile import MoodLog
@@ -31,21 +26,27 @@ from services.db import fetch_all, fetch_one, fetch_val, execute
 # Yardımcı dönüştürme fonksiyonları
 # ---------------------------------------------------------------------------
 
+
 def _metadata_to_db_columns(meta: Optional[MessageMetadata]) -> Tuple:
     """
     MessageMetadata nesnesini chat_messages tablosundaki ilgili kolonlara çevirir.
+
     Kolonlar:
-        mode, intent, sentiment, emotion, emotion_intensity,
-        importance_score, is_sensitive, topic
+    mode, intent, sentiment, emotion, emotion_intensity,
+    importance_score, is_sensitive, topic
     """
     if meta is None:
         return (None, None, None, None, None, None, None, None)
 
+    # Enums kullanılıyorsa .value al, string ise direkt geçir
+    def _val(x):
+        return getattr(x, "value", x) if x is not None else None
+
     return (
-        meta.mode.value if meta.mode else None,
-        meta.intent.value if meta.intent else None,
-        meta.sentiment.value if meta.sentiment else None,
-        meta.emotion.value if meta.emotion else None,
+        _val(meta.mode),
+        _val(meta.intent),
+        _val(meta.sentiment),
+        _val(meta.emotion),
         meta.emotion_intensity,
         meta.importance_score,
         1 if meta.is_sensitive else (0 if meta.is_sensitive is not None else None),
@@ -53,30 +54,28 @@ def _metadata_to_db_columns(meta: Optional[MessageMetadata]) -> Tuple:
     )
 
 
-def _row_to_chat_message(row: dict) -> ChatMessage:
-    """
-    chat_messages satırını ChatMessage modeline dönüştürür.
-    """
-    from schemas.common import MessageMetadata  # circular import riskini azaltmak için local
+def _row_to_chat_message(row: Mapping[str, Any]) -> ChatMessage:
+    """chat_messages satırını ChatMessage modeline dönüştürür."""
+    data = dict(row)  # sqlite3.Row -> dict
 
     metadata = MessageMetadata(
-        mode=row.get("mode"),
-        intent=row.get("intent"),
-        sentiment=row.get("sentiment"),
-        emotion=row.get("emotion"),
-        emotion_intensity=row.get("emotion_intensity"),
-        importance_score=row.get("importance_score"),
-        is_sensitive=bool(row["is_sensitive"]) if row.get("is_sensitive") is not None else None,
-        topic=row.get("topic"),
+        mode=data.get("mode"),
+        intent=data.get("intent"),
+        sentiment=data.get("sentiment"),
+        emotion=data.get("emotion"),
+        emotion_intensity=data.get("emotion_intensity"),
+        importance_score=data.get("importance_score"),
+        is_sensitive=bool(data["is_sensitive"]) if data.get("is_sensitive") is not None else None,
+        topic=data.get("topic"),
     )
 
     # Bazı alanlar None olabilir, Pydantic uygun casting yapar
     msg = ChatMessage(
-        id=row.get("id"),
-        session_id=row.get("session_id"),
-        role=row.get("role"),
-        content=row.get("content"),
-        created_at=datetime.fromisoformat(row["created_at"]),
+        id=data.get("id"),
+        session_id=data.get("session_id"),
+        role=data.get("role"),
+        content=data.get("content"),
+        created_at=datetime.fromisoformat(data["created_at"]),
         metadata=metadata,
     )
     return msg
@@ -85,6 +84,7 @@ def _row_to_chat_message(row: dict) -> ChatMessage:
 # ---------------------------------------------------------------------------
 # Sohbet Mesajları
 # ---------------------------------------------------------------------------
+
 
 def save_chat_message(message: ChatMessage, user_id: Optional[str] = None) -> ChatMessage:
     """
@@ -105,6 +105,7 @@ def save_chat_message(message: ChatMessage, user_id: Optional[str] = None) -> Ch
 
     meta_cols = _metadata_to_db_columns(message.metadata)
 
+    # DİKKAT: 13 kolon, 13 placeholder
     sql = """
         INSERT INTO chat_messages (
             session_id,
@@ -120,8 +121,7 @@ def save_chat_message(message: ChatMessage, user_id: Optional[str] = None) -> Ch
             importance_score,
             is_sensitive,
             topic
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     """
 
     params = (
@@ -143,14 +143,23 @@ def save_chat_message(message: ChatMessage, user_id: Optional[str] = None) -> Ch
 
 
 def get_session_messages(session_id: str, limit: int = 50) -> List[ChatMessage]:
-    """
-    Belirli bir session_id'ye ait son N mesajı (tarih sırasına göre) getirir.
-    """
+    """Belirli bir session_id'ye ait son N mesajı (tarih sırasına göre) getirir."""
     sql = """
         SELECT
-            id, session_id, user_id, role, content, created_at,
-            mode, intent, sentiment, emotion,
-            emotion_intensity, importance_score, is_sensitive, topic
+            id,
+            session_id,
+            user_id,
+            role,
+            content,
+            created_at,
+            mode,
+            intent,
+            sentiment,
+            emotion,
+            emotion_intensity,
+            importance_score,
+            is_sensitive,
+            topic
         FROM chat_messages
         WHERE session_id = ?
         ORDER BY id ASC
@@ -167,9 +176,20 @@ def get_recent_messages_for_user(user_id: str, limit: int = 100) -> List[ChatMes
     """
     sql = """
         SELECT
-            id, session_id, user_id, role, content, created_at,
-            mode, intent, sentiment, emotion,
-            emotion_intensity, importance_score, is_sensitive, topic
+            id,
+            session_id,
+            user_id,
+            role,
+            content,
+            created_at,
+            mode,
+            intent,
+            sentiment,
+            emotion,
+            emotion_intensity,
+            importance_score,
+            is_sensitive,
+            topic
         FROM chat_messages
         WHERE user_id = ?
         ORDER BY id DESC
@@ -185,10 +205,9 @@ def get_recent_messages_for_user(user_id: str, limit: int = 100) -> List[ChatMes
 # Mood / Duygu Günlüğü
 # ---------------------------------------------------------------------------
 
+
 def save_mood_log(mood: MoodLog) -> MoodLog:
-    """
-    MoodLog kaydedip id ile birlikte geri döner.
-    """
+    """MoodLog kaydedip id ile birlikte geri döner."""
     if mood.timestamp is None:
         mood.timestamp = datetime.utcnow()
 
@@ -203,17 +222,20 @@ def save_mood_log(mood: MoodLog) -> MoodLog:
             intensity,
             topic,
             summary
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
     """
+
+    # sentiment / emotion enum ise value'sunu al
+    def _val(x):
+        return getattr(x, "value", x) if x is not None else None
 
     params = (
         mood.user_id,
         mood.session_id,
         mood.message_id,
         mood.timestamp.isoformat(),
-        mood.sentiment.value if mood.sentiment else None,
-        mood.emotion.value if mood.emotion else None,
+        _val(mood.sentiment),
+        _val(mood.emotion),
         mood.intensity,
         mood.topic,
         mood.summary,
@@ -230,9 +252,7 @@ def get_mood_logs_for_period(
     from_date: date,
     to_date: date,
 ) -> List[MoodLog]:
-    """
-    Belirli tarih aralığı için kullanıcının mood loglarını getirir.
-    """
+    """Belirli tarih aralığı için kullanıcının mood loglarını getirir."""
     sql = """
         SELECT
             id,
@@ -250,6 +270,7 @@ def get_mood_logs_for_period(
           AND date(timestamp) BETWEEN date(?) AND date(?)
         ORDER BY timestamp ASC;
     """
+
     rows = fetch_all(
         sql,
         params=[user_id, from_date.isoformat(), to_date.isoformat()],
@@ -258,18 +279,19 @@ def get_mood_logs_for_period(
 
     logs: List[MoodLog] = []
     for r in rows:
+        d = dict(r)
         logs.append(
             MoodLog(
-                id=r.get("id"),
-                user_id=r["user_id"],
-                session_id=r.get("session_id"),
-                message_id=r.get("message_id"),
-                timestamp=datetime.fromisoformat(r["timestamp"]),
-                sentiment=r.get("sentiment") or "unknown",
-                emotion=r.get("emotion") or "none",
-                intensity=r.get("intensity") or 0.0,
-                topic=r.get("topic"),
-                summary=r.get("summary"),
+                id=d.get("id"),
+                user_id=d["user_id"],
+                session_id=d.get("session_id"),
+                message_id=d.get("message_id"),
+                timestamp=datetime.fromisoformat(d["timestamp"]),
+                sentiment=d.get("sentiment") or "unknown",
+                emotion=d.get("emotion") or "none",
+                intensity=d.get("intensity") or 0.0,
+                topic=d.get("topic"),
+                summary=d.get("summary"),
             )
         )
     return logs
@@ -278,6 +300,7 @@ def get_mood_logs_for_period(
 # ---------------------------------------------------------------------------
 # Basit İstatistikler
 # ---------------------------------------------------------------------------
+
 
 def get_total_queries() -> int:
     """
@@ -291,9 +314,7 @@ def get_total_queries() -> int:
 
 
 def get_total_messages() -> int:
-    """
-    Toplam mesaj sayısı (user + assistant + system).
-    """
+    """Toplam mesaj sayısı (user + assistant + system)."""
     sql = "SELECT COUNT(*) AS cnt FROM chat_messages;"
     value = fetch_val(sql, db="chat")
     return int(value or 0)
@@ -311,13 +332,8 @@ def get_db_chat_size_rows() -> int:
 
 def get_recent_sessions(limit: int = 20) -> List[str]:
     """
-    Son kullanılan session_id'leri döner. İleride session listesi için kullanılabilir.
-    """
-    sql = """
-        SELECT DISTINCT session_id
-        FROM chat_messages
-        ORDER BY MAX(id) OVER (PARTITION BY session_id) DESC
-        LIMIT ?;
+    Son kullanılan session_id'leri döner.
+    İleride session listesi için kullanılabilir.
     """
     # SQLite'ta WINDOW fonksiyonları her versiyonda yok olabilir,
     # bu yüzden alternatif bir yöntem kullanmak daha güvenli:
@@ -329,4 +345,12 @@ def get_recent_sessions(limit: int = 20) -> List[str]:
         LIMIT ?;
     """
     rows = fetch_all(sql_alt, params=[limit], db="chat")
-    return [r["session_id"] for r in rows if r.get("session_id")]
+
+    sessions: List[str] = []
+    for r in rows:
+        d = dict(r)
+        sid = d.get("session_id")
+        if sid:
+            sessions.append(sid)
+
+    return sessions
