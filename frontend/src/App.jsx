@@ -12,7 +12,7 @@ import SettingsPanel from './components/SettingsPanel';
 import DocumentUpload from './components/DocumentUpload';
 import SessionManager from './components/SessionManager';
 import MessageBubble from './components/MessageBubble';
-import LoadingSpinner from './components/LoadingSpinner';
+import { LoadingSpinner } from './components/LoadingSpinner';
 import './App.css';
 
 function App() {
