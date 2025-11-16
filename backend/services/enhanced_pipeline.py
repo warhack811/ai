@@ -1,21 +1,9 @@
 """
 backend/services/enhanced_pipeline.py
 ======================================
-FINAL COMPLETE ENHANCED PIPELINE
+ULTIMATE HYBRID PIPELINE - MODEL KEYS DÜZELTİLDİ
 
-Tüm özellikler entegre edilmiş production-ready versiyonu:
-✅ Turkish Language Processing
-✅ Personality Engine
-✅ Semantic Intent Detection
-✅ Response Coherence Check
-✅ Response Planning
-✅ Reasoning Engine (karmaşık sorular için)
-✅ Adaptive Learning (feedback'lerden öğrenme)
-✅ Multi-layer Quality Control
-✅ Smart Context Building
-✅ Retry Logic
-
-Version: 3.0 FINAL
+Version: 4.1 FIXED
 """
 
 from __future__ import annotations
@@ -44,32 +32,36 @@ from services import rag_engine
 from services import safety_filter
 from services import profile_service
 
-# Yeni servisler - Turkish Processing
+# ESKİ servisler
+from services.output_cleaner import OutputCleaner
+from services.quality_validator import QualityValidator
+
+# YENİ servisler - Turkish Processing
 from services.turkish_language_processor import (
     normalize_user_input,
     enhance_model_output,
     calculate_turkish_quality,
 )
 
-# Yeni servisler - Personality
+# YENİ servisler - Personality
 from services.personality_engine import (
     get_personality,
     build_personality_prompt,
 )
 
-# Yeni servisler - Semantic Understanding
+# YENİ servisler - Semantic Understanding
 from services.semantic_intent_detector import detect_intent_semantic
 
-# Yeni servisler - Quality Control
+# YENİ servisler - Quality Control
 from services.response_coherence_checker import check_response_coherence
 
-# Yeni servisler - Planning
+# YENİ servisler - Planning
 from services.response_planner import (
     plan_response,
     build_planning_instructions,
 )
 
-# Yeni servisler - Reasoning
+# YENİ servisler - Reasoning
 from services.reasoning_engine import (
     should_use_reasoning,
     build_reasoning_prompt,
@@ -77,7 +69,7 @@ from services.reasoning_engine import (
     verify_reasoning,
 )
 
-# Yeni servisler - Learning
+# YENİ servisler - Learning
 from services.adaptive_learning_system import (
     record_feedback,
     detect_implicit_signal,
@@ -91,68 +83,48 @@ settings = get_settings()
 # Global instances
 complexity_scorer = ComplexityScorer()
 cache = get_cache_manager()
+output_cleaner = OutputCleaner()
+quality_validator = QualityValidator()
 
 
 class EnhancedContextBuilder:
-    """
-    Akıllı context oluşturucu
-    Context'i körü körüne eklemek yerine, ihtiyaca göre ekler
-    """
+    """Akıllı context oluşturucu"""
     
     @staticmethod
     def should_include_profile(query: str, intent: IntentLabel) -> bool:
-        """Profil bilgisi gerekli mi?"""
         personal_keywords = ['beni', 'ben', 'benim', 'bana', 'hatırla', 'hakkımda']
         if any(kw in query.lower() for kw in personal_keywords):
             return True
-        
         if intent == IntentLabel.PROFILE_UPDATE:
             return True
-        
         return False
     
     @staticmethod
     def should_include_history(query: str, intent: IntentLabel) -> bool:
-        """Geçmiş konuşma gerekli mi?"""
-        # Basit sorular için gereksiz
         if intent == IntentLabel.SMALL_TALK and len(query.split()) < 10:
             return False
-        
-        # Devam eden konuşma işaretleri
         continuation_markers = [
             'peki', 'ee', 'o zaman', 'ayrıca', 'bir de',
             'onun için', 'bunun üzerine', 'daha önce'
         ]
         if any(marker in query.lower() for marker in continuation_markers):
             return True
-        
-        # Yaratıcı görevler için gereksiz
         creative_keywords = ['fıkra', 'şaka', 'hikaye', 'masal']
         if any(kw in query.lower() for kw in creative_keywords):
             return False
-        
         return True
     
     @staticmethod
     def should_include_rag(query: str, intent: IntentLabel, mode: ChatMode) -> bool:
-        """RAG bilgisi gerekli mi?"""
-        # Açıkça doküman soruyorsa
         if intent == IntentLabel.DOCUMENT_QUESTION:
             return True
-        
-        # Research mode'da
         if mode == ChatMode.RESEARCH:
             return True
-        
-        # Selamlama/small talk için gereksiz
         if intent == IntentLabel.SMALL_TALK:
             return False
-        
-        # Yaratıcı görevler için gereksiz
         creative_keywords = ['fıkra', 'şaka', 'hikaye', 'masal', 'şiir']
         if any(kw in query.lower() for kw in creative_keywords):
             return False
-        
         return True
     
     @staticmethod
@@ -164,33 +136,26 @@ class EnhancedContextBuilder:
         rag_context: str = "",
         profile_context: str = "",
     ) -> str:
-        """
-        Akıllıca context oluştur (sadece gerekeni ekle)
-        """
         context_parts = []
         
-        # 1. Profil (sadece gerekiyorsa)
         if EnhancedContextBuilder.should_include_profile(user_message, intent):
             if profile_context and profile_context.strip():
                 profile_text = profile_context.strip()[:200]
                 context_parts.append(f"[Kullanıcı Hakkında]\n{profile_text}")
                 context_parts.append("")
         
-        # 2. RAG (sadece gerekiyorsa)
         if EnhancedContextBuilder.should_include_rag(user_message, intent, mode):
             if rag_context and rag_context.strip():
                 rag_text = rag_context.strip()[:1000]
                 context_parts.append(f"[İlgili Bilgiler]\n{rag_text}")
                 context_parts.append("")
         
-        # 3. History (sadece gerekiyorsa)
         if EnhancedContextBuilder.should_include_history(user_message, intent):
             if chat_history and chat_history.strip():
                 history_text = chat_history.strip()[:500]
                 context_parts.append(f"[Önceki Konuşma]\n{history_text}")
                 context_parts.append("")
         
-        # 4. Kullanıcı sorusu (her zaman)
         if context_parts:
             context_parts.append(f"[Soru]\n{user_message}")
         else:
@@ -198,7 +163,6 @@ class EnhancedContextBuilder:
         
         full_context = '\n'.join(context_parts)
         
-        # Max 2000 karakter
         if len(full_context) > 2000:
             full_context = full_context[:2000]
         
@@ -207,64 +171,49 @@ class EnhancedContextBuilder:
 
 async def process_chat_enhanced(request: ChatRequest) -> ChatResponse:
     """
-    FINAL COMPLETE ENHANCED PIPELINE
-    
-    Tüm özellikler entegre edilmiş
+    ULTIMATE HYBRID PIPELINE v4.1 FIXED
     """
     
     user_id = request.user_id or "anonymous"
     session_id = request.session_id or f"session_{user_id}_{int(datetime.utcnow().timestamp())}"
     
     logger.info("=" * 80)
-    logger.info(f"🚀 ENHANCED PIPELINE v3.0 - NEW REQUEST")
+    logger.info(f"🚀 ULTIMATE HYBRID PIPELINE v4.1 - NEW REQUEST")
     logger.info(f"   User: {user_id} | Session: {session_id}")
     logger.info(f"   Query: {request.message[:80]}...")
     logger.info("=" * 80)
     
     start_time = datetime.utcnow()
     
-    # ============================================
-    # PHASE 1: INPUT NORMALIZATION (TÜRKÇE)
-    # ============================================
-    
+    # PHASE 1: INPUT NORMALIZATION
     normalized_message = normalize_user_input(request.message)
     logger.info(f"📝 Normalized: {normalized_message[:80]}...")
     
-    # ============================================
     # PHASE 2: PARALLEL PREPROCESSING
-    # ============================================
-    
     async def async_intent():
-        """Semantic intent detection with cache"""
         cache_key = f"{normalized_message}:{request.mode.value}"
         cached = cache.get_cached_intent(cache_key, request.mode.value)
         if cached:
-            logger.debug("✓ Intent from cache")
-            return cached, 1.0  # Cached, high confidence
+            return cached, 1.0
         
-        # YENİ: Semantic intent detector
         intent_result = detect_intent_semantic(
             message=normalized_message,
             mode=request.mode,
-            conversation_history=None  # TODO: Add history
+            conversation_history=None
         )
         
         cache.cache_intent(cache_key, request.mode.value, intent_result.intent)
         return intent_result.intent, intent_result.confidence
     
     async def async_emotion():
-        """Emotion analysis with cache"""
         cached = cache.get_cached_emotion(normalized_message)
         if cached:
-            logger.debug("✓ Emotion from cache")
             return cached
-        
         emotion_data = analyze_emotion(normalized_message)
         cache.cache_emotion(normalized_message, emotion_data)
         return emotion_data
     
     async def async_history():
-        """Chat history fetch"""
         try:
             recent = chat_db.get_session_messages(session_id, limit=6)
             if recent:
@@ -279,7 +228,6 @@ async def process_chat_enhanced(request: ChatRequest) -> ChatResponse:
         return ""
     
     async def async_profile():
-        """User profile context"""
         try:
             return memory.build_long_term_context_text(
                 user_id=user_id,
@@ -291,10 +239,8 @@ async def process_chat_enhanced(request: ChatRequest) -> ChatResponse:
         return ""
     
     async def async_rag():
-        """RAG pipeline with cache"""
         cached = cache.get_cached_rag(normalized_message)
         if cached:
-            logger.debug("✓ RAG from cache")
             return cached
         
         try:
@@ -312,7 +258,6 @@ async def process_chat_enhanced(request: ChatRequest) -> ChatResponse:
             logger.error(f"RAG error: {e}")
             return "", []
     
-    # Run parallel
     parallel_start = datetime.utcnow()
     
     (intent, intent_confidence), (sentiment, emotion, intensity, topic), chat_history, profile_context, (rag_context, sources) = await asyncio.gather(
@@ -328,17 +273,11 @@ async def process_chat_enhanced(request: ChatRequest) -> ChatResponse:
     logger.info(f"   Intent: {intent.value} (conf: {intent_confidence:.2f})")
     logger.info(f"   Emotion: {emotion.value} ({intensity:.2f})")
     
-    # ============================================
     # PHASE 3: COMPLEXITY SCORING
-    # ============================================
-    
     complexity = complexity_scorer.score(normalized_message, request.mode, intent)
     logger.info(f"📊 Complexity: {complexity}/10")
     
-    # ============================================
-    # PHASE 3.5: REASONING CHECK (YENİ!)
-    # ============================================
-    
+    # PHASE 3.5: REASONING CHECK
     use_reasoning = should_use_reasoning(
         query=normalized_message,
         intent=intent,
@@ -348,10 +287,7 @@ async def process_chat_enhanced(request: ChatRequest) -> ChatResponse:
     
     logger.info(f"🧠 Reasoning: {'YES' if use_reasoning else 'NO'}")
     
-    # ============================================
     # PHASE 4: PERSONALITY ENGINE
-    # ============================================
-    
     safety_level = getattr(request, 'safety_level', 0) if hasattr(request, 'safety_level') else 0
     
     personality_profile = get_personality(
@@ -366,10 +302,7 @@ async def process_chat_enhanced(request: ChatRequest) -> ChatResponse:
     logger.info(f"🎭 Personality: tone={personality_profile.tone.value}, "
                 f"formality={personality_profile.formality:.1f}")
     
-    # ============================================
-    # PHASE 4.5: RESPONSE PLANNING (YENİ!)
-    # ============================================
-    
+    # PHASE 4.5: RESPONSE PLANNING
     response_plan = plan_response(
         query=normalized_message,
         intent=intent,
@@ -381,10 +314,7 @@ async def process_chat_enhanced(request: ChatRequest) -> ChatResponse:
     
     logger.info(f"📋 Response plan: {response_plan.approach} approach")
     
-    # ============================================
     # PHASE 5: SMART CONTEXT BUILDING
-    # ============================================
-    
     smart_context = EnhancedContextBuilder.build_smart_context(
         user_message=normalized_message,
         mode=request.mode,
@@ -396,11 +326,7 @@ async def process_chat_enhanced(request: ChatRequest) -> ChatResponse:
     
     logger.info(f"📝 Smart context: {len(smart_context)} chars")
     
-    # ============================================
     # PHASE 5.5: FINAL PROMPT CONSTRUCTION
-    # ============================================
-    
-    # Reasoning kullanılacaksa özel prompt
     if use_reasoning:
         final_system_prompt = build_reasoning_prompt(
             query=normalized_message,
@@ -411,10 +337,7 @@ async def process_chat_enhanced(request: ChatRequest) -> ChatResponse:
     else:
         final_system_prompt = f"{personality_instructions}\n\n{planning_instructions}"
     
-    # ============================================
     # PHASE 6: METADATA
-    # ============================================
-    
     importance_score = float(intensity)
     is_sensitive = intensity > 0.6 or intent in (
         IntentLabel.EMOTIONAL_SUPPORT,
@@ -440,17 +363,14 @@ async def process_chat_enhanced(request: ChatRequest) -> ChatResponse:
         metadata=user_meta,
     )
     
-    # Save user message
     try:
         user_msg = chat_db.save_chat_message(user_msg, user_id=user_id)
     except Exception as e:
         logger.error(f"DB save error: {e}")
     
-    # ============================================
-    # PHASE 7: ADAPTIVE LEARNING MODEL SELECTION (YENİ!)
-    # ============================================
-    
-    available_models = ["qwen-14b", "deepseek-qwen-32b", "llama3-8b", "kocdigital-8b"]
+    # PHASE 7: ADAPTIVE LEARNING MODEL SELECTION
+    # ✅ DÜZELTİLDİ: config.py'deki model key'leriyle uyumlu
+    available_models = ["phi", "qwen", "deepseek", "mistral"]
     
     learned_model, learning_confidence = get_model_recommendation(
         intent=intent.value,
@@ -463,10 +383,7 @@ async def process_chat_enhanced(request: ChatRequest) -> ChatResponse:
         force_model = learned_model
         logger.info(f"📚 Learned recommendation: {learned_model} (conf: {learning_confidence:.2f})")
     
-    # ============================================
-    # PHASE 8: MODEL GENERATION (WITH RETRY)
-    # ============================================
-    
+    # PHASE 8: MODEL GENERATION (MULTI-LAYER RETRY)
     max_retries = 2
     best_answer = None
     best_quality = 0.0
@@ -479,7 +396,6 @@ async def process_chat_enhanced(request: ChatRequest) -> ChatResponse:
         model_start = datetime.utcnow()
         
         try:
-            # Model'e gönder
             raw_answer, model_key = await route_and_generate(
                 chat_request=request,
                 composed_prompt="",
@@ -496,10 +412,7 @@ async def process_chat_enhanced(request: ChatRequest) -> ChatResponse:
             model_time = (datetime.utcnow() - model_start).total_seconds() * 1000
             logger.info(f"   Model: {model_key.upper()} | Time: {model_time:.0f}ms")
             
-            # ========================================
-            # REASONING EXTRACTION (YENİ!)
-            # ========================================
-            
+            # REASONING EXTRACTION
             if use_reasoning:
                 extracted_steps, extracted_answer = extract_reasoning_and_answer(raw_answer)
                 
@@ -507,7 +420,6 @@ async def process_chat_enhanced(request: ChatRequest) -> ChatResponse:
                     reasoning_steps = extracted_steps
                     logger.info(f"🧠 Reasoning steps: {len(reasoning_steps)}")
                     
-                    # Reasoning'i doğrula
                     is_valid, reasoning_confidence = verify_reasoning(
                         reasoning_steps,
                         extracted_answer,
@@ -522,69 +434,66 @@ async def process_chat_enhanced(request: ChatRequest) -> ChatResponse:
                 else:
                     logger.warning("⚠️ No reasoning tags found")
             
-            # ========================================
-            # TÜRKÇE İYİLEŞTİRME
-            # ========================================
+            # LAYER 1: ESKİ OUTPUT CLEANER
+            cleaned_answer = output_cleaner.clean(raw_answer, model_key)
+            logger.info(f"   🧹 Layer 1: OutputCleaner applied")
             
-            enhanced_answer = enhance_model_output(raw_answer, aggressive=False)
+            # LAYER 2: YENİ TURKISH ENHANCEMENT
+            enhanced_answer = enhance_model_output(cleaned_answer, aggressive=False)
+            logger.info(f"   🇹🇷 Layer 2: Turkish enhancement applied")
             
-            # ========================================
-            # MULTI-LAYER QUALITY CONTROL (YENİ!)
-            # ========================================
+            # LAYER 3: ESKİ QUALITY VALIDATOR
+            is_valid_old, quality_old = quality_validator.validate(enhanced_answer, normalized_message)
+            logger.info(f"   ✓ Layer 3: Old quality = {quality_old:.2f}")
             
-            # Layer 1: Turkish quality
+            # LAYER 4: YENİ TURKISH QUALITY
             turkish_quality = calculate_turkish_quality(enhanced_answer)
+            logger.info(f"   🇹🇷 Layer 4: Turkish quality = {turkish_quality.overall:.2f}")
             
-            # Layer 2: Coherence check (YENİ!)
+            # LAYER 5: YENİ COHERENCE CHECK
             coherence_score = check_response_coherence(
                 response=enhanced_answer,
                 original_query=normalized_message,
                 rag_sources=[s.snippet for s in sources] if sources else None
             )
+            logger.info(f"   🔍 Layer 5: Coherence = {coherence_score.overall:.2f}")
             
-            # Combined quality score
+            # FINAL QUALITY SCORE (5 LAYER)
             overall_quality = (
-                turkish_quality.overall * 0.4 +
-                coherence_score.overall * 0.6
+                quality_old * 0.2 +
+                turkish_quality.overall * 0.3 +
+                coherence_score.overall * 0.5
             )
             
-            logger.info(f"   Turkish: {turkish_quality.overall:.2f} | "
-                       f"Coherence: {coherence_score.overall:.2f} | "
-                       f"Overall: {overall_quality:.2f}")
+            logger.info(f"   📊 FINAL QUALITY: {overall_quality:.2f}")
             
-            # Log issues
             all_issues = turkish_quality.issues + coherence_score.issues
             if all_issues:
-                logger.warning(f"   Issues: {', '.join(all_issues[:3])}")
+                logger.warning(f"   ⚠️ Issues: {', '.join(all_issues[:3])}")
             
-            # En iyi cevabı sakla
             if overall_quality > best_quality:
                 best_answer = enhanced_answer
                 best_quality = overall_quality
             
-            # Yeterince iyi ise dur
             if overall_quality >= 0.7:
-                logger.info(f"✅ Quality sufficient ({overall_quality:.2f}), stopping retries")
+                logger.info(f"✅ Quality excellent ({overall_quality:.2f}), stopping retries")
                 break
             
-            # Retry gerekiyorsa
             if attempt < max_retries - 1:
                 logger.warning(f"⚠️ Quality low ({overall_quality:.2f}), retrying...")
                 await asyncio.sleep(0.5)
         
         except Exception as e:
             logger.error(f"Model error (attempt {attempt + 1}): {e}")
+            import traceback
+            traceback.print_exc()
             if attempt == max_retries - 1:
                 best_answer = "Üzgünüm, şu anda bir teknik sorun yaşıyorum. Lütfen tekrar dener misiniz?"
                 model_key = "error"
     
-    # Final answer
     final_answer = best_answer or "Üzgünüm, cevap üretemedim."
     
-    # ============================================
     # PHASE 9: SAFETY FILTER
-    # ============================================
-    
     safe_answer = final_answer
     safety_level_result = SafetyLevel.OK
     
@@ -606,10 +515,7 @@ async def process_chat_enhanced(request: ChatRequest) -> ChatResponse:
         except Exception as e:
             logger.error(f"Safety filter error: {e}")
     
-    # ============================================
     # PHASE 10: SAVE ASSISTANT MESSAGE
-    # ============================================
-    
     assistant_meta = MessageMetadata(
         mode=request.mode,
         intent=intent,
@@ -634,13 +540,9 @@ async def process_chat_enhanced(request: ChatRequest) -> ChatResponse:
     except Exception as e:
         logger.error(f"DB save error: {e}")
     
-    # ============================================
-    # PHASE 11: SIDE EFFECTS (async)
-    # ============================================
-    
+    # PHASE 11: SIDE EFFECTS
     async def async_side_effects():
         try:
-            # Mood log
             mood = MoodLog(
                 user_id=user_id,
                 session_id=session_id,
@@ -654,7 +556,6 @@ async def process_chat_enhanced(request: ChatRequest) -> ChatResponse:
             )
             chat_db.save_mood_log(mood)
             
-            # Memory update
             memory.handle_post_interaction(
                 user_id=user_id,
                 session_id=session_id,
@@ -662,7 +563,6 @@ async def process_chat_enhanced(request: ChatRequest) -> ChatResponse:
                 assistant_message=assistant_msg,
             )
             
-            # Profile update
             profile_service.update_profile_from_message(
                 user_id=user_id,
                 message=user_msg,
@@ -675,28 +575,21 @@ async def process_chat_enhanced(request: ChatRequest) -> ChatResponse:
     
     asyncio.create_task(async_side_effects())
     
-    # ============================================
-    # PHASE 12: ADAPTIVE LEARNING (YENİ!)
-    # ============================================
-    
+    # PHASE 12: ADAPTIVE LEARNING
     total_time = (datetime.utcnow() - start_time).total_seconds() * 1000
     
     async def async_learning():
         try:
-            # Implicit signal tespit et
             previous_msg = None
             previous_resp = None
             
-            # Son mesajları al
             history = chat_db.get_session_messages(session_id, limit=4)
             if len(history) >= 2:
-                # Son user mesajını bul
                 for i in range(len(history) - 1, -1, -1):
                     if history[i].role == Role.USER and i != len(history) - 1:
                         previous_msg = history[i].content
                         break
                 
-                # Son assistant cevabını bul
                 for i in range(len(history) - 1, -1, -1):
                     if history[i].role == Role.ASSISTANT:
                         previous_resp = history[i].content
@@ -709,7 +602,6 @@ async def process_chat_enhanced(request: ChatRequest) -> ChatResponse:
                 user_id=user_id
             )
             
-            # Feedback kaydet
             feedback_event = FeedbackEvent(
                 user_id=user_id,
                 session_id=session_id,
@@ -735,12 +627,9 @@ async def process_chat_enhanced(request: ChatRequest) -> ChatResponse:
     
     asyncio.create_task(async_learning())
     
-    # ============================================
     # PHASE 13: BUILD RESPONSE
-    # ============================================
-    
     logger.info("=" * 80)
-    logger.info(f"✅ ENHANCED PIPELINE v3.0 COMPLETE")
+    logger.info(f"✅ ULTIMATE HYBRID PIPELINE v4.1 COMPLETE")
     logger.info(f"   Total: {total_time:.0f}ms | Model: {model_key.upper()}")
     logger.info(f"   Quality: {best_quality:.2f} | Safety: {safety_level_result.value}")
     if use_reasoning and reasoning_steps:

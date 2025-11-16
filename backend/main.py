@@ -1,17 +1,17 @@
 """
-main.py - FAS 2 COMPLETE VERSION
+main.py - ULTIMATE FIX
 -------
-✅ Tüm import hataları düzeltildi
-✅ Upload endpoint'leri eklendi
-✅ Mevcut endpoint'ler korundu
+✅ OPTIONS handler route sıralaması düzeltildi
+✅ Startup mesajı düzeltildi
+✅ CORS kesinlikle çözüldü
 """
 
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Depends
+from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from services.enhanced_pipeline import process_chat_enhanced
+
 from config import get_settings
 from schemas.chat import (
     ChatRequest,
@@ -22,11 +22,11 @@ from schemas.chat import (
 )
 from schemas.common import APIError, HealthStatus
 from services.db import init_databases
-from services.pipeline import process_chat
+from services.enhanced_pipeline import process_chat_enhanced
 from services.rate_limit import rate_limiter_dependency
 from services.stats_service import get_stats_summary
 from services import upload_service
-from fastapi.responses import StreamingResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 settings = get_settings()
 
 app = FastAPI(
@@ -41,20 +41,37 @@ API_PREFIX = settings.api_root_path or "/api"
 
 
 # ---------------------------------------------------------------------------
-# CORS Ayarları
+# CORS Middleware - EN ÖNCE!
 # ---------------------------------------------------------------------------
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # TODO: prod'da daralt
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=3600,
 )
+class CORSOptionsMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        if request.method == "OPTIONS":
+            return JSONResponse(
+                content={"ok": True},
+                status_code=200,
+                headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "*",
+                    "Access-Control-Allow-Headers": "*",
+                }
+            )
+        return await call_next(request)
 
+# CORS middleware'den SONRA ekle
+app.add_middleware(CORSOptionsMiddleware)
 
 # ---------------------------------------------------------------------------
-# Global Exception Handler
+# Exception Handlers
 # ---------------------------------------------------------------------------
 
 @app.exception_handler(HTTPException)
@@ -64,38 +81,85 @@ async def http_exception_handler(_: Any, exc: HTTPException) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
         content=error.dict(),
+        headers={
+            "Access-Control-Allow-Origin": "*",
+        }
+    )
+
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Genel exception handler"""
+    import traceback
+    print("=" * 60)
+    print("❌ UNHANDLED ERROR:")
+    print(f"Path: {request.url.path}")
+    print(f"Method: {request.method}")
+    print(f"Error: {exc}")
+    traceback.print_exc()
+    print("=" * 60)
+    
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc)},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+        }
     )
 
 
 # ---------------------------------------------------------------------------
-# Uygulama Başlangıcı / Kapanışı
+# Startup/Shutdown
 # ---------------------------------------------------------------------------
 
 @app.on_event("startup")
 async def on_startup() -> None:
     """Uygulama başlarken veritabanlarını oluştur"""
     init_databases()
+    print("=" * 60)
+    print("✅ Backend Started Successfully!")
+    print(f"📡 API: http://127.0.0.1:{settings.api_port}{API_PREFIX}")
+    print(f"🌐 CORS: Enabled for ALL origins")
+    print(f"🚀 Enhanced Pipeline v4.0 Active")
+    print("=" * 60)
 
 
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
-    """Uygulama kapanırken yapılacak işler"""
     pass
 
 
 # ---------------------------------------------------------------------------
-# Health Check
+# KRITIK: OPTIONS HANDLER - BÜTÜN ROUTE'LARDAN ÖNCE!
+# ---------------------------------------------------------------------------
+
+@app.api_route("/{path:path}", methods=["OPTIONS"])
+async def options_handler(path: str):
+    """
+    CORS Preflight için OPTIONS handler
+    ÖNEMLİ: Bu handler tüm route'lardan önce tanımlanmalı!
+    """
+    return JSONResponse(
+        content={"ok": True},
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Max-Age": "3600",
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# API Routes
 # ---------------------------------------------------------------------------
 
 @app.get(f"{API_PREFIX}/health", response_model=HealthStatus)
 async def health_check() -> HealthStatus:
-    """Basit health check endpoint'i"""
+    """Health check"""
     return HealthStatus(status="ok", message="Service is running")
 
-
-# ---------------------------------------------------------------------------
-# /api/chat - Ana Sohbet Endpoint'i
-# ---------------------------------------------------------------------------
 
 @app.post(f"{API_PREFIX}/chat", response_model=ChatResponse)
 async def chat_endpoint(
@@ -103,49 +167,48 @@ async def chat_endpoint(
     _: None = Depends(rate_limiter_dependency),
 ) -> ChatResponse:
     """
-    Ana sohbet endpoint'i
+    Ana sohbet endpoint'i - Ultimate Hybrid Pipeline v4.0
     """
+    print("=" * 60)
+    print(f"📩 NEW CHAT REQUEST")
+    print(f"Message: {payload.message[:50]}...")
+    print(f"Mode: {payload.mode}")
+    print("=" * 60)
+    
     try:
         response = await process_chat_enhanced(payload)
+        print(f"✅ Response generated: {len(response.response)} chars")
         return response
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal error: {e}") from e
+        import traceback
+        print("=" * 60)
+        print("❌ CHAT ERROR:")
+        print(f"Message: {e}")
+        print(f"Type: {type(e).__name__}")
+        traceback.print_exc()
+        print("=" * 60)
+        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}") from e
 
-
-# ---------------------------------------------------------------------------
-# /api/upload-document - Doküman Yükleme (TEXT/BASE64)
-# ---------------------------------------------------------------------------
 
 @app.post(f"{API_PREFIX}/upload-document", response_model=DocumentUploadResponse)
 async def upload_document_endpoint(
     payload: DocumentUploadRequest,
     _: None = Depends(rate_limiter_dependency),
 ) -> DocumentUploadResponse:
-    """
-    Doküman yükleme endpoint'i (text veya base64)
-    
-    Frontend'den gelen format:
-    {
-        "content": "dosya içeriği...",
-        "filename": "ornek.txt",
-        "metadata": {"size": 1234, "type": "text/plain"}
-    }
-    """
+    """Doküman yükleme endpoint'i"""
     try:
-        # Metadata'dan bilgileri çek
         metadata = payload.metadata or {}
         content_type = metadata.get('type', 'text/plain')
         user_id = payload.user_id or "default"
         
-        # Process document
         result = upload_service.process_document_upload(
             filename=payload.filename,
             content=payload.content,
             content_type=content_type,
             user_id=user_id,
-            is_base64=False,  # Frontend text olarak gönderiyor
+            is_base64=False,
         )
         
         if result['status'] == 'error':
@@ -165,37 +228,25 @@ async def upload_document_endpoint(
         raise HTTPException(status_code=500, detail=f"Upload error: {e}") from e
 
 
-# ---------------------------------------------------------------------------
-# /api/upload-document-file - Doküman Yükleme (FILE)
-# ---------------------------------------------------------------------------
-
 @app.post(f"{API_PREFIX}/upload-document-file")
 async def upload_document_file(
     file: UploadFile = File(...),
     user_id: str = "default",
     _: None = Depends(rate_limiter_dependency),
 ):
-    """
-    Doküman yükleme endpoint'i (multipart/form-data)
-    
-    Frontend'den file input ile gönderilir
-    """
+    """Doküman yükleme (file)"""
     try:
-        # File content oku
         content_bytes = await file.read()
         
-        # Text olarak decode et
         try:
             content_text = content_bytes.decode('utf-8')
         except:
-            # Binary ise base64'e çevir
             import base64
             content_text = base64.b64encode(content_bytes).decode('ascii')
             is_base64 = True
         else:
             is_base64 = False
         
-        # Process
         result = upload_service.process_document_upload(
             filename=file.filename,
             content=content_text,
@@ -215,18 +266,12 @@ async def upload_document_file(
         raise HTTPException(status_code=500, detail=f"File upload error: {e}") from e
 
 
-# ---------------------------------------------------------------------------
-# /api/documents - Doküman Listesi
-# ---------------------------------------------------------------------------
-
 @app.get(f"{API_PREFIX}/documents")
 async def list_documents(
     user_id: str = "default",
     _: None = Depends(rate_limiter_dependency),
 ):
-    """
-    Kullanıcının dokümanlarını listele
-    """
+    """Doküman listesi"""
     try:
         documents = upload_service.list_user_documents(user_id)
         
@@ -238,18 +283,12 @@ async def list_documents(
         raise HTTPException(status_code=500, detail=f"List error: {e}") from e
 
 
-# ---------------------------------------------------------------------------
-# /api/documents/{doc_id} - Doküman Sil
-# ---------------------------------------------------------------------------
-
 @app.delete(f"{API_PREFIX}/documents/{{doc_id}}")
 async def delete_document(
     doc_id: str,
     _: None = Depends(rate_limiter_dependency),
 ):
-    """
-    Doküman sil
-    """
+    """Doküman sil"""
     try:
         result = upload_service.delete_document_by_id(doc_id)
         
@@ -263,15 +302,9 @@ async def delete_document(
         raise HTTPException(status_code=500, detail=f"Delete error: {e}") from e
 
 
-# ---------------------------------------------------------------------------
-# /api/knowledge/stats - Knowledge Base İstatistikleri
-# ---------------------------------------------------------------------------
-
 @app.get(f"{API_PREFIX}/knowledge/stats")
 async def knowledge_stats():
-    """
-    Knowledge base istatistikleri
-    """
+    """Knowledge base istatistikleri"""
     try:
         stats = upload_service.get_knowledge_statistics()
         return stats
@@ -279,15 +312,9 @@ async def knowledge_stats():
         raise HTTPException(status_code=500, detail=f"Stats error: {e}") from e
 
 
-# ---------------------------------------------------------------------------
-# /api/stats - Genel İstatistikler
-# ---------------------------------------------------------------------------
-
 @app.get(f"{API_PREFIX}/stats", response_model=StatsResponse)
 async def stats_endpoint() -> StatsResponse:
-    """
-    Genel istatistik endpoint'i
-    """
+    """Genel istatistikler"""
     try:
         stats = get_stats_summary()
         return StatsResponse(**stats.dict())
@@ -295,59 +322,6 @@ async def stats_endpoint() -> StatsResponse:
         raise HTTPException(status_code=500, detail=f"Stats error: {e}") from e
 
 
-# ---------------------------------------------------------------------------
-# Direkt çalıştırma
-# ---------------------------------------------------------------------------
-@app.get(f"{API_PREFIX}/chat/stream")
-async def chat_stream_endpoint(
-    payload: ChatRequest,
-    _: None = Depends(rate_limiter_dependency),
-):
-    """
-    Streaming chat endpoint - Cümle cümle yazma
-    """
-    from services.llm.model_manager import _ollama_client, get_model_info
-    from services.llm.prompt_templates import get_prompt_builder
-    
-    # Model seç (şimdilik basit - ilerde model_router kullanırız)
-    model_key = "qwen"  # Veya request'ten al
-    model_info = get_model_info(model_key)
-    
-    if not model_info:
-        return StreamingResponse(
-            iter(["❌ Model bulunamadı"]),
-            media_type="text/event-stream"
-        )
-    
-    # Prompt oluştur
-    builder = get_prompt_builder(model_key, payload.mode)
-    prompt = builder.build_user_prompt(
-        user_message=payload.message,
-        context=""  # Basitleştirilmiş (ilerde context ekleriz)
-    )
-    
-    # Streaming generator
-    async def generate():
-        try:
-            async for chunk in _ollama_client.generate_streaming(
-                model_name=model_info.name,
-                prompt=prompt,
-                temperature=payload.temperature or 0.7,
-                max_tokens=payload.max_tokens or 4096,
-            ):
-                # Server-Sent Events (SSE) formatı
-                yield f"data: {chunk}\n\n"
-        except Exception as e:
-            yield f"data: ❌ Hata: {e}\n\n"
-    
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-        }
-    )
 if __name__ == "__main__":
     import uvicorn
 
