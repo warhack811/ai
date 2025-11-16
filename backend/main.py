@@ -11,7 +11,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-
+from services.enhanced_pipeline import process_chat_enhanced
 from config import get_settings
 from schemas.chat import (
     ChatRequest,
@@ -106,7 +106,7 @@ async def chat_endpoint(
     Ana sohbet endpoint'i
     """
     try:
-        response = await process_chat(payload)
+        response = await process_chat_enhanced(payload)
         return response
     except HTTPException:
         raise

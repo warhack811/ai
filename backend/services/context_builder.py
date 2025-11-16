@@ -76,13 +76,13 @@ def build_smart_context(
         context_parts.append("")  # Boş satır
     
     # ------------------------------------------
-    # 3. CHAT HISTORY (kısa, max 1000 char)
+    # 3. CHAT HISTORY (kısa, max 4000 char)
     # ------------------------------------------
     if chat_history and chat_history.strip():
         history_text = chat_history.strip()
         
-        # History'yi kırp (max 1000 karakter)
-        max_history_chars = 1000
+        # History'yi kırp (max 4000 karakter - memory.py ile eşleşik)
+        max_history_chars = 4000
         if len(history_text) > max_history_chars:
             # Son kısmı al (en yeni mesajlar)
             history_text = "...\n\n" + history_text[-max_history_chars:]
@@ -101,15 +101,15 @@ def build_smart_context(
     full_context = '\n'.join(context_parts)
     
     # TOTAL CONTEXT SIZE CHECK
-    # Complexity'ye göre max total size
+    # Complexity'ye göre max total size (2x artırıldı)
     if complexity <= 3:
-        max_total = 1500  # Phi için minimal
+        max_total = 3000  # Phi için minimal (1500 → 3000)
     elif complexity <= 6:
-        max_total = 2500  # Mistral için orta
+        max_total = 5000  # Mistral için orta (2500 → 5000)
     elif complexity <= 8:
-        max_total = 4000  # Qwen için geniş
+        max_total = 8000  # Qwen için geniş (4000 → 8000)
     else:
-        max_total = 6000  # DeepSeek için çok geniş
+        max_total = 12000  # DeepSeek için çok geniş (6000 → 12000)
     
     if len(full_context) > max_total:
         # İlk önce history'yi kısalt

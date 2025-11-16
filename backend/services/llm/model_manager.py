@@ -304,8 +304,8 @@ async def generate_with_model(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
     # NEW PARAMETERS:
-    user_message: str = "",
-    context: str = "",
+    user_message: Optional[str] = None,  # ← None olmalı
+    context: Optional[str] = None,  # ← None olmalı
     mode: ChatMode = ChatMode.NORMAL,
 ) -> str:
     """
@@ -323,28 +323,42 @@ async def generate_with_model(
     max_toks = max_tokens if max_tokens is not None else info.default_max_tokens
     
     # ============================================
-    # YENİ: NATIVE PROMPT TEMPLATES
+    # 🔴 ZORUNLU: NATIVE TEMPLATE KULLAN
     # ============================================
     
-    if user_message:
-        # Native template builder kullan
+    # user_message yoksa prompt'tan çıkar (backward compatibility)
+    if user_message is None or user_message == "":
+        # Eski sistemden gelen çağrılar için fallback
+        logger.warning("⚠️ user_message boş, prompt kullanılıyor (eski sistem)")
+        final_prompt = prompt
+    else:
+        # 🎯 YENİ SİSTEM: Native template builder
         from .prompt_templates import get_prompt_builder
         
         builder = get_prompt_builder(model_key, mode)
+        
+        # Context varsa kullan, yoksa boş
+        ctx = context if context else ""
+        
         final_prompt = builder.build_user_prompt(
             user_message=user_message,
-            context=context  # Temiz context (history + RAG + profile)
+            context=ctx
         )
         
-        logger.debug(f"Using native template for {model_key}")
-    else:
-        # Backward compatibility: eski kod için
-        final_prompt = prompt
-        logger.debug(f"Using legacy prompt format")
-    
-    logger.info(
-        f"🔧 Generate: {model_key.upper()} | temp={temp:.2f} | max_tokens={max_toks}"
-    )
+        # 🔴 DEBUG OUTPUT
+        print("\n" + "="*80)
+        print(f"✅ NATIVE TEMPLATE KULLANILIYOR!")
+        print(f"   Model: {model_key.upper()}")
+        print(f"   User message: {user_message[:80]}...")
+        print(f"   Context length: {len(ctx)} chars")
+        print(f"   Final prompt length: {len(final_prompt)} chars")
+        print(f"\n📝 MODELE GİDEN PROMPT (ilk 400 karakter):")
+        print("-" * 80)
+        print(final_prompt[:400])
+        print("-" * 80)
+        print("="*80 + "\n")
+        
+        logger.info(f"✅ Native template: {model_key.upper()} | prompt={len(final_prompt)} chars")
     
     # ============================================
     # OLLAMA CALL

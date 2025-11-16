@@ -25,7 +25,7 @@ def build_short_term_history_text(
     user_id: str,
     session_id: str,
     messages: List[ChatMessage],
-    max_exchanges: int = 3,  # Son 3 soru-cevap çifti (6 mesaj)
+    max_exchanges: int = 15,  # Son 15 soru-cevap çifti (30 mesaj)
 ) -> str:
     """
     Son N mesajı model için TEMIZ bir formata çevirir.
@@ -70,8 +70,8 @@ def build_short_term_history_text(
     # Birleştir
     history_text = "\n\n".join(lines)
     
-    # Total history max 2000 karakter
-    max_total_chars = 2000
+    # Total history max 4000 karakter (2000 → 4000)
+    max_total_chars = 4000
     if len(history_text) > max_total_chars:
         # Sondan başlayarak kırp (en yeni mesajlar kalır)
         history_text = "...\n\n" + history_text[-max_total_chars:]

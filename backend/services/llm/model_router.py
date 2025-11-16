@@ -111,8 +111,8 @@ async def route_and_generate(
     override_max_tokens: Optional[int] = None,
     intent: Optional[IntentLabel] = None,
     # YENİ PARAMETRELER (FAS 1):
-    user_message: str = "",
-    context: str = "",
+    user_message: Optional[str] = None,  # ← None olmalı
+    context: Optional[str] = None,  # ← None olmalı
     mode: Optional[ChatMode] = None,
 ) -> Tuple[str, str]:
     """
@@ -125,13 +125,18 @@ async def route_and_generate(
     if mode is None:
         mode = chat_request.mode
     
-    # user_message yoksa request'ten al
-    if not user_message:
-        user_message = chat_request.message
+    # 🔴 ZORUNLU: user_message'ı doldur
+    actual_user_message = user_message if user_message is not None else chat_request.message
     
-    # context yoksa composed_prompt kullan
-    if not context:
-        context = composed_prompt
+    # 🔴 ZORUNLU: context'i doldur
+    actual_context = context if context is not None else composed_prompt
+    
+    # 🔴 DEBUG
+    print(f"\n🎯 ROUTER DEBUG:")
+    print(f"   user_message param: {user_message is not None}")
+    print(f"   actual_user_message: {actual_user_message[:50]}...")
+    print(f"   context param: {context is not None}")
+    print(f"   actual_context length: {len(actual_context)}\n")
     
     msg = chat_request.message
 
@@ -163,16 +168,16 @@ async def route_and_generate(
         max_toks,
     )
 
-    # Generate with native templates
+    # 🔴 ZORUNLU: user_message ve context'i GÖNDERMELİYİZ
     text = await generate_with_model(
         model_key=model_key,
         prompt=composed_prompt,  # Deprecated (backward compat)
         system_prompt=system_prompt,  # Deprecated (backward compat)
         temperature=temp,
         max_tokens=max_toks,
-        # YENİ PARAMETRELER:
-        user_message=user_message,
-        context=context,
+        # 🔴 BUNLARI MUTLAKA DOLDUR:
+        user_message=actual_user_message,  # ← Dolu
+        context=actual_context,  # ← Dolu
         mode=mode,
     )
 

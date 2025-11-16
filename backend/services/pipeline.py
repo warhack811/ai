@@ -93,15 +93,15 @@ async def process_chat(request: ChatRequest) -> ChatResponse:
     async def async_history():
         """Chat history fetch - FIXED VERSION"""
         try:
-            # Son 3 exchange'i getir (6 mesaj)
-            recent = chat_db.get_session_messages(session_id, limit=6)
+            # Son 15 exchange'i getir (30 mesaj) - daha uzun hafıza
+            recent = chat_db.get_session_messages(session_id, limit=30)
             if recent:
                 # YENİ: Temiz format kullan (meta tag'siz)
                 return memory.build_short_term_history_text(
                     user_id=user_id,
                     session_id=session_id,
                     messages=recent,
-                    max_exchanges=3  # Son 3 soru-cevap
+                    max_exchanges=15  # Son 15 soru-cevap
                 )
         except Exception as e:
             logger.error(f"History error: {e}")
