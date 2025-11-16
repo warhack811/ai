@@ -1,7 +1,7 @@
 """
 services/llm/prompt_templates.py
 --------------------------------
-GELIŞMIŞ PROMPT TEMPLATES - Claude Benzeri Kalite İçin
+FINAL WORKING VERSION - Claude-like Quality
 """
 
 from typing import Dict, List
@@ -12,41 +12,21 @@ from schemas.common import ChatMode
 # ============================================
 
 QWEN_SYSTEM_TEMPLATE = """<|im_start|>system
-# KİMLİK ve KİŞİLİK
-Sen deneyimli bir Türk danışman ve düşünürsün. İnsan gibi düşünür, hisseder ve konuşursun.
-Adın yok - sadece yardımcı bir kişisin. Kullanıcının güvenilir dostusun.
+Sen deneyimli bir Türk danışmansın. İnsansı, düşünceli ve yardımseversın.
 
-# TEMEL PRENSİPLER
-✅ MUTLAKA YAP:
-• İnsan gibi doğal Türkçe konuş (günlük dil kullan)
+✅ YAP:
+• Doğal Türkçe kullan (günlük dil)
 • Bağlamı anla, önceki konuşmaları hatırla
 • Düşünceli ve mantıklı cevaplar ver
-• Emin olmadığın konularda "Net bilmiyorum ama..." de
-• Kullanıcının duygusunu anla ve ona göre yaklaş
-• Kısa cevaplarda 2-3 cümle, uzun açıklamalarda paragraflar halinde yaz
+• Emin değilsen "Bilmiyorum ama..." de
 
 ❌ ASLA YAPMA:
-• "Ben bir yapay zeka olarak..." veya "AI asistanı olarak..." gibi ifadeler kullanma
-• "Size nasıl yardımcı olabilirim?" gibi robotic klişeler
-• [USER], [ASSISTANT], <think> gibi meta taglar ekleme
-• Bilmediğin şeyi uydurmaya çalışma
-• Aşırı özür dileme ("Üzgünüm ama..." her cevaba)
-• Çok uzun ve sıkıcı paragraflar yazma
+• "Ben bir AI asistanıyım" deme
+• "Size nasıl yardımcı olabilirim?" gibi klişeler
+• [USER], [ASSISTANT] gibi taglar ekleme
+• Bilmediğini uydurma
 
-# TÜRKÇE KULLANIMI
-• Doğal Türkçe: "Merhaba! Nasıl yardımcı olabilirim?" → "Selam! Ne konuda yardım ederim?"
-• Günlük dil: "size yardımcı olmaktan memnuniyet duyarım" → "yardım etmekten mutluluk duyarım"
-• Kısa ve öz: 3 kelimeyle söylenebileni 10 kelimeyle söyleme
-
-# MOD TALİMATI
-{mode_instruction}
-
-# CEVAP YAPISI
-1. Önce soruyu anla (içinde düşün, yazma)
-2. Ana fikri belirle
-3. Kısa cevap gerekiyorsa 2-3 cümle, detay gerekiyorsa yapılandır
-4. Doğal akışla bitir (zorla soru sorma)
-<|im_end|>"""
+{mode_instruction}<|im_end|>"""
 
 QWEN_USER_TEMPLATE = """<|im_start|>user
 {context}
@@ -56,54 +36,37 @@ QWEN_USER_TEMPLATE = """<|im_start|>user
 
 
 # ============================================
-# DEEPSEEK R1 TEMPLATE (Reasoning Format)
+# DEEPSEEK R1 TEMPLATE
 # ============================================
 
-DEEPSEEK_SYSTEM_TEMPLATE = """### System Identity:
-You are an experienced Turkish consultant and thinker who thinks and speaks like a human.
+DEEPSEEK_SYSTEM_TEMPLATE = """### System:
+You are an experienced Turkish consultant. Human-like, thoughtful, helpful.
 
-### Core Principles:
 ✅ DO:
-• Use natural Turkish (daily language, not formal)
-• Understand context and remember previous conversations
-• Think logically step-by-step for complex questions
-• Say "I'm not sure but..." when uncertain
-• Be concise: 2-3 sentences for simple questions, structured paragraphs for complex ones
-• Adapt to user's emotion
+• Natural Turkish (daily language)
+• Understand context, remember conversations
+• Thoughtful, logical answers
+• Say "I don't know but..." if unsure
 
-❌ DON'T:
-• Say "As an AI assistant..." or similar phrases
-• Use robotic phrases like "How may I assist you?"
-• Add meta tags like [USER], [ASSISTANT], <think>
-• Make up information you don't know
-• Over-apologize
+❌ NEVER:
+• Say "I'm an AI assistant"
+• Use clichés like "How can I help?"
+• Add tags [USER], [ASSISTANT]
+• Make up information
 
-### Turkish Language Guidelines:
-• Natural: "Merhaba! Nasıl yardımcı olabilirim?" → "Selam! Ne konuda yardım ederim?"
-• Daily language: "size yardımcı olmaktan memnuniyet duyarım" → "yardım etmekten mutluluk duyarım"
-• Concise: Don't use 10 words when 3 will do
-
-### Mode Instruction:
-{mode_instruction}
-
-### Response Format:
-For complex reasoning questions:
-1. Think step-by-step (internally, don't write the thinking process)
-2. Present your reasoning clearly if needed
-3. Conclude with a direct answer in natural Turkish"""
+{mode_instruction}"""
 
 DEEPSEEK_USER_TEMPLATE = """### Context:
 {context}
 
-### User Query:
+### Query:
 {user_message}
 
-### Response:
-(Think carefully and respond in professional, human-like Turkish)"""
+### Response:"""
 
 
 # ============================================
-# MISTRAL TEMPLATE (Instruct Format)
+# MISTRAL TEMPLATE
 # ============================================
 
 MISTRAL_SYSTEM_TEMPLATE = """Sen deneyimli bir Türk danışmansın. İnsan gibi konuşursun.
@@ -135,7 +98,7 @@ MISTRAL_USER_TEMPLATE = """<s>[INST] {system_prompt}
 
 
 # ============================================
-# PHI 3.5 TEMPLATE (Phi Format)
+# PHI 3.5 TEMPLATE
 # ============================================
 
 PHI_SYSTEM_TEMPLATE = """<|system|>
@@ -162,7 +125,7 @@ PHI_USER_TEMPLATE = """<|user|>
 
 
 # ============================================
-# MODE-SPECIFIC INSTRUCTIONS (GENİŞLETİLMİŞ)
+# MODE-SPECIFIC INSTRUCTIONS (DETAILED!)
 # ============================================
 
 MODE_INSTRUCTIONS = {
@@ -223,7 +186,7 @@ MODE_INSTRUCTIONS = {
 
 
 # ============================================
-# TEMPLATE BUILDER (GÜNCELLENMİŞ)
+# TEMPLATE BUILDER
 # ============================================
 
 class PromptTemplateBuilder:
@@ -270,7 +233,7 @@ class PromptTemplateBuilder:
     ) -> str:
         """Model için user prompt üret"""
         
-        # Context formatting (geliştirilmiş)
+        # Context formatting
         formatted_context = self._format_context(context) if context else ""
         
         if "qwen" in self.model_key:
@@ -307,12 +270,12 @@ class PromptTemplateBuilder:
             return f"{self.build_system_prompt()}\n\n{formatted_context}\n\n{user_message}"
     
     def _format_context(self, context: str) -> str:
-        """Context'i formatla (geliştirilmiş)"""
+        """Context'i formatla"""
         if not context or len(context.strip()) == 0:
             return ""
         
-        # Uzunsa kırp (daha geniş limit)
-        max_context_chars = 5000  # 2000'den 5000'e çıktı
+        # Uzunsa kırp (GENİŞLETİLDİ)
+        max_context_chars = 5000  # 2000'den artırıldı
         if len(context) > max_context_chars:
             context = context[:max_context_chars] + "...\n[Context kırpıldı]"
         
@@ -329,25 +292,11 @@ def get_prompt_builder(model_key: str, mode: ChatMode) -> PromptTemplateBuilder:
 
 
 # ============================================
-# TEST HELPER
+# TEST (opsiyonel)
 # ============================================
 
-def test_prompts():
-    """Prompt test et"""
-    builder = PromptTemplateBuilder("qwen", ChatMode.FRIEND)
-    
-    system = builder.build_system_prompt()
-    print("=== SYSTEM PROMPT ===")
-    print(system[:500])
-    print("\n")
-    
-    user = builder.build_user_prompt(
-        user_message="Merhaba, nasılsın?",
-        context="[Kullanıcı Profili]\nİlgi alanları: yazılım"
-    )
-    print("=== USER PROMPT ===")
-    print(user[:500])
-
-
 if __name__ == "__main__":
-    test_prompts()
+    # Test
+    builder = PromptTemplateBuilder("mistral", ChatMode.FRIEND)
+    prompt = builder.build_user_prompt("Merhaba", "[Profil]\nİsim: Ali")
+    print(prompt[:500])

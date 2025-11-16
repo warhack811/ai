@@ -272,7 +272,22 @@ async def stats_endpoint() -> StatsResponse:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Stats error: {e}") from e
 
-
+@app.get("/api/learning/stats")
+async def learning_stats():
+    """Learning system stats"""
+    try:
+        from services.adaptive_learning_system import get_learning_stats
+        stats = get_learning_stats()
+        return stats
+    except Exception as e:
+        logger.error(f"Learning stats error: {e}")
+        return {
+            "total_events": 0,
+            "positive": 0,
+            "negative": 0,
+            "by_model": {},
+            "error": str(e)
+        }
 # ---------------------------------------------------------------------------
 # Direkt çalıştırma
 # ---------------------------------------------------------------------------
