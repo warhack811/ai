@@ -161,6 +161,78 @@ async def stats_endpoint() -> StatsResponse:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Stats error: {e}") from e
 
+
+
+
+
+
+@app.get(f"{API_PREFIX}/learning/stats")
+async def learning_stats_endpoint():
+    """
+    Adaptive learning istatistikleri
+    """
+    try:
+        from services.adaptive_learning_system import get_learning_statistics
+        stats = get_learning_statistics()
+        return stats
+    except Exception as e:
+        # Eğer sistem henüz hiç kullanılmamışsa
+        return {
+            "total_feedback": 0,
+            "avg_explicit_rating": 0,
+            "implicit_signals": {},
+            "total_insights": 0,
+            "model_performance": {},
+            "error": str(e)
+        }
+
+
+# ---------------------------------------------------------------------------
+# /api/feedback - Kullanıcı Feedback'i
+# ---------------------------------------------------------------------------
+
+@app.post(f"{API_PREFIX}/feedback")
+async def feedback_endpoint(
+    user_id: str,
+    message_id: int,
+    rating: int,  # 1-5 arası
+):
+    """
+    Kullanıcı explicit feedback'i (👍/👎 butonları)
+    """
+    try:
+        from services.adaptive_learning_system import record_explicit_feedback
+        
+        if rating < 1 or rating > 5:
+            raise HTTPException(status_code=400, detail="Rating must be between 1 and 5")
+        
+        record_explicit_feedback(user_id, message_id, rating)
+        
+        return {"status": "ok", "message": "Feedback recorded"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Feedback error: {e}") from e
+
+
+# ---------------------------------------------------------------------------
+# /api/models/health - Model Sağlık Kontrolü
+# ---------------------------------------------------------------------------
+
+@app.get(f"{API_PREFIX}/models/health")
+async def models_health():
+    """
+    LLM modellerinin sağlık durumu
+    """
+    try:
+        from services.llm.model_manager import test_llm_health
+        health = await test_llm_health()
+        return health
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e)
+        }
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

@@ -39,7 +39,7 @@ class ReasoningEngine:
     def __init__(self):
         # Reasoning gerektiren durumlar
         self.reasoning_triggers = {
-            'high_complexity': 8,  # Complexity > 8
+            'high_complexity': 9,  # Complexity > 8
             'intents': [
                 IntentLabel.CODE_HELP,
                 IntentLabel.EXPLAIN,
@@ -66,7 +66,7 @@ class ReasoningEngine:
         HIZLI CEVAP: Basit sorular için FALSE dön!
         """
         # Koşul 1: Çok basit sorular → NO
-        if complexity <= 4:
+        if complexity <= 7:
             return False
         
         # Koşul 2: Small talk → NO
@@ -85,11 +85,7 @@ class ReasoningEngine:
         query_lower = query.lower()
         if any(kw in query_lower for kw in self.reasoning_triggers['keywords']):
             return True
-        
-        # Koşul 6: Code mode → YES
-        if mode == ChatMode.CODE:
-            return True
-        
+ 
         return False
     
     def build_reasoning_prompt(

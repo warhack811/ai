@@ -71,11 +71,21 @@ class AdaptiveLearningSystem:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_database()
     
-    def _init_database(self):
+class AdaptiveLearningSystem:
+    """
+    Adaptive learning sistemi
+    """
+    
+    def __init__(self):
+        self.db_path = Path("data/adaptive_learning.db")
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_database()
+    
+    def _init_database(self):  # ← Bu satır class içinde, __init__'den sonra
         """Database tabloları oluştur"""
         conn = sqlite3.connect(str(self.db_path))
         
-        # Feedback olayları
+        # Feedback olayları tablosu
         conn.execute("""
             CREATE TABLE IF NOT EXISTS feedback_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -94,15 +104,32 @@ class AdaptiveLearningSystem:
                 complexity INTEGER,
                 response_time_ms REAL,
                 
-                timestamp TEXT NOT NULL,
-                
-                INDEX idx_user (user_id),
-                INDEX idx_model (model_used),
-                INDEX idx_signal (implicit_signal)
+                timestamp TEXT NOT NULL
             )
         """)
         
-        # Öğrenilen insights
+        # Index'leri AYRI komutlarla oluştur
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_feedback_user 
+            ON feedback_events(user_id)
+        """)
+        
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_feedback_model 
+            ON feedback_events(model_used)
+        """)
+        
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_feedback_signal 
+            ON feedback_events(implicit_signal)
+        """)
+        
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_feedback_timestamp 
+            ON feedback_events(timestamp)
+        """)
+        
+        # Öğrenilen insights tablosu
         conn.execute("""
             CREATE TABLE IF NOT EXISTS learning_insights (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -117,8 +144,20 @@ class AdaptiveLearningSystem:
             )
         """)
         
+        # Insights için index
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_insights_category 
+            ON learning_insights(category)
+        """)
+        
         conn.commit()
         conn.close()
+    
+    def record_feedback(self, event: FeedbackEvent):  # ← Sonraki metodlar buradan devam
+        """
+        Feedback kaydı
+        """
+        # ... geri kalan kodlar
     
     def record_feedback(self, event: FeedbackEvent):
         """

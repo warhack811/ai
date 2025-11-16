@@ -141,7 +141,13 @@ class PersonalityEngine:
             instructions.append("Kibar ve resmi bir dil kullan.")
         else:
             instructions.append("Profesyonel ama samimi bir dil kullan.")
-        
+        # Emoji kullanımı
+        if profile.humor > 0.5 or profile.tone == ToneType.PLAYFUL:
+            emoji_instruction = "Cevaplarında emoji kullan (😊, 👍, 🎉 gibi). Ama aşırıya kaçma, 1-2 emoji yeter."
+        else:
+            emoji_instruction = "Emoji kullanma, ciddi kal."
+
+
         # Verbosity (detay seviyesi)
         if profile.verbosity < 0.4:
             instructions.append(

@@ -76,43 +76,46 @@ class SingleLLMModelSettings(BaseModel):
 class LLMSettings(BaseModel):
     ollama_base_url: AnyHttpUrl = "http://localhost:11434"
 
-    # Ana modeller (isimler OLLAMA MODEL adlarınla birebir aynı olmalı!)
+    # Ana modeller (Ollama'daki model isimleriyle AYNI olmalı!)
     qwen: SingleLLMModelSettings = SingleLLMModelSettings(
-    name=os.getenv("LLM_QWEN_NAME", "qwen2.5-14b-uncensored-q4_k_m"),  # ← :latest eklendi
-    display_name="Qwen 2.5 14B Uncensored (Ana Asistan)",
-    provider="ollama",
-    context_length=8192,
-    default_temperature=0.5,
-    default_max_tokens=2048,
-    is_primary=False,
-)
-deepseek: SingleLLMModelSettings = SingleLLMModelSettings(
-    name=os.getenv("LLM_DEEPSEEK_NAME", "deepseek-r1-8b-uncensored-q4_k_m"),  # ← :latest eklendi
-    display_name="DeepSeek R1 8B Uncensored (Reasoning)",
-    provider="ollama",
-    context_length=8192,
-    default_temperature=0.4,
-    default_max_tokens=2048,
-    is_primary=False,
-)
-mistral: SingleLLMModelSettings = SingleLLMModelSettings(
-    name=os.getenv("LLM_MISTRAL_NAME", "mistral-7b-uncensored-q4_k_m"),  # ← :latest eklendi
-    display_name="Mistral 7B Uncensored (Hızlı)",
-    provider="ollama",
-    context_length=4096,
-    default_temperature=0.5,
-    default_max_tokens=1024,
-    is_primary=False,
-)
-phi: SingleLLMModelSettings = SingleLLMModelSettings(
-    name=os.getenv("LLM_PHI_NAME", "phi-3.5-mini-instruct-q4_k_m"),  # ← :latest eklendi
-    display_name="Phi 3.5 Mini Instruct Q4_K_M",
-    provider="ollama",
-    context_length=4096,
-    default_temperature=0.7,
-    default_max_tokens=1024,
-    is_primary=True,
-)
+        name=os.getenv("LLM_QWEN_NAME", "qwen2.5-14b-uncensored-q4_k_m"),
+        display_name="Qwen 2.5 14B Uncensored (Ana Asistan)",
+        provider="ollama",
+        context_length=8192,
+        default_temperature=0.5,
+        default_max_tokens=2048,
+        is_primary=False,
+    )
+    
+    deepseek: SingleLLMModelSettings = SingleLLMModelSettings(
+        name=os.getenv("LLM_DEEPSEEK_NAME", "deepseek-r1-8b-uncensored-q4_k_m:"),  # ← Ollama'daki isim
+        display_name="DeepSeek R1 8B (Reasoning)",
+        provider="ollama",
+        context_length=8192,
+        default_temperature=0.4,
+        default_max_tokens=2048,
+        is_primary=False,
+    )
+    
+    mistral: SingleLLMModelSettings = SingleLLMModelSettings(
+        name=os.getenv("LLM_MISTRAL_NAME", "mistral-7b-uncensored-q4_k_m"),  # ← Ollama'daki isim
+        display_name="Mistral 7B Instruct",
+        provider="ollama",
+        context_length=4096,
+        default_temperature=0.5,
+        default_max_tokens=1024,
+        is_primary=False,
+    )
+    
+    phi: SingleLLMModelSettings = SingleLLMModelSettings(
+        name=os.getenv("LLM_PHI_NAME", "phi-3.5-mini-instruct-q4_k_m"),  # ← Ollama'daki isim
+        display_name="Phi 3.5 Mini",
+        provider="ollama",
+        context_length=4096,
+        default_temperature=0.7,
+        default_max_tokens=1024,
+        is_primary=True,  # ✅ PRIMARY MODEL
+    )
 class RagSettings(BaseModel):
     # Gerçek zamanlı konular için web aramasını kullan
     enable_for_realtime_topics: bool = True

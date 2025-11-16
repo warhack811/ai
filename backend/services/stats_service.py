@@ -100,11 +100,11 @@ def get_stats_summary() -> StatsSummary:
     model_usage = get_model_usage_stats()
 
     stats = StatsSummary(
-        total_queries=total_queries,
-        total_documents=total_docs,
-        db_size=db_size,
-        total_scraped_sites=total_scraped_sites,
-        model_usage=model_usage or None,
-        avg_response_time_ms=None,  # İleride ölçmek istersen pipeline içinde hesaplarız.
-    )
+    total_queries=total_queries,
+    total_documents=total_docs,
+    db_size=db_size,
+    total_scraped_sites=total_scraped_sites,
+    llm_usage=model_usage or None,  # ✅ llm_usage olarak değişti
+    avg_response_time_ms=None,
+)
     return stats

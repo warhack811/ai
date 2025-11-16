@@ -83,6 +83,14 @@ class IntentLabel(str, Enum):
     PROFILE_UPDATE = "profile_update"
     DOCUMENT_QUESTION = "document_question"
     WEB_SEARCH = "web_search"
+    
+    # ============ YENİ EKLEMELER (Semantic Intent Detector için) ============
+    CLARIFICATION_REQUEST = "clarification_request"  # "Anlamadım, açıklar mısın?"
+    FOLLOW_UP = "follow_up"                          # "Peki, o zaman..."
+    COMPARE = "compare"                              # "X ile Y arasındaki fark?"
+    RECOMMENDATION = "recommendation"                # "Ne önerirsin?"
+    CREATIVE = "creative"                            # Yaratıcı içerik isteği
+    
     UNKNOWN = "unknown"
 
 
@@ -184,8 +192,10 @@ class ChatMessage(BaseModel):
     # Backend tarafından eklenen meta veriler
     metadata: Optional[MessageMetadata] = None
 
-    class Config:
-        orm_mode = True
+    # ✅ Pydantic v2 uyumlu config
+    model_config = {
+        "from_attributes": True
+    }
 
 
 class ChatSourceAnnotatedMessage(ChatMessage):
@@ -232,14 +242,19 @@ class StatsSummary(BaseModel):
     db_size: int = 0  # kayıt sayısı veya KB/MB cinsinden de yorumlanabilir
     total_scraped_sites: int = 0
 
-    # Model bazlı istatistikler
-    model_usage: Optional[dict] = Field(
+    # ✅ Model bazlı istatistikler (isim değişti: model_usage → llm_usage)
+    llm_usage: Optional[dict] = Field(
         default=None,
         description="{'qwen': 123, 'deepseek': 45, ...}"
     )
 
     # Ortalama cevap süresi (ms veya sn)
     avg_response_time_ms: Optional[float] = None
+    
+    # ✅ Pydantic v2 namespace uyarısını kapat
+    model_config = {
+        "protected_namespaces": ()
+    }
 
 
 # ---------------------------------------------------------------------------

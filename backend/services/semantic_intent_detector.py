@@ -170,27 +170,30 @@ class SemanticIntentDetector:
             },
             
             IntentLabel.COMPARE: {
-                'keywords': [
-                    'fark', 'karşılaştır', 'hangisi', 'mi yoksa', 'ya da',
-                    'arasındaki fark', 'daha iyi', 'tercih'
-                ],
-                'patterns': [
-                    r'\b(karşılaştır|fark|hangisi)\b',
-                    r'\b\w+\s+mi\s+yoksa\s+\w+\b',
-                ],
-                'context': ['comparison'],
-            },
-            
+    'keywords': [
+        'fark', 'karşılaştır', 'hangisi', 'mi yoksa', 'ya da',
+        'arasındaki fark', 'daha iyi', 'tercih', 've', 'ile',
+        'farklı', 'benzer', 'aynı mı'  # YENÄ° EKLEDÄ°K
+    ],
+    'patterns': [
+        r'\b(karşılaştır|fark|hangisi)\b',
+        r'\b\w+\s+(mi|mu|mü|mı)\s+yoksa\s+\w+\b',
+        r'\b\w+\s+(ile|ve)\s+\w+\b',  # YENÄ°: "Python ile JavaScript"
+    ],
+    'context': ['comparison'],
+},
             IntentLabel.RECOMMENDATION: {
-                'keywords': [
-                    'öner', 'tavsiye', 'ne yapmalıyım', 'hangi', 'en iyi',
-                    'önerin var mı', 'seçmek'
-                ],
-                'patterns': [
-                    r'\b(öner|tavsiye|ne yapmalı)\b',
-                ],
-                'context': ['recommendation'],
-            },
+    'keywords': [
+        'öner', 'tavsiye', 'ne yapmalıyım', 'hangi', 'en iyi',
+        'önerin var mı', 'seçmek', 'hangisini', 'önerirsin',
+        'yol göster', 'rehberlik', 'yardımcı ol'  # YENÄ° EKLEDÄ°K
+    ],
+    'patterns': [
+        r'\b(öner|tavsiye|ne yapmalı|hangisi)\b',
+        r'\b(hangi|ne)\s+\w+\s+(öğren|seç|al)\b',  # YENÄ°: "Hangi dil öğrenmeli"
+    ],
+    'context': ['recommendation'],
+},
         }
     
     def _score_intent(
