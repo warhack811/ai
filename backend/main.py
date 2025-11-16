@@ -27,7 +27,9 @@ from services.pipeline import process_chat
 from services.rate_limit import rate_limiter_dependency
 from services.stats_service import get_stats_summary
 from services import upload_service
-
+from fastapi.exceptions import RequestValidationError
+from fastapi import Request
+from fastapi.responses import JSONResponse
 settings = get_settings()
 
 app = FastAPI(
@@ -66,7 +68,19 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 # Global Exception Handler
 # ---------------------------------------------------------------------------
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    # Ham body'yi okumaya çalış (bir kere okunursa tekrar okunamaz; bu yüzden önce alıyoruz)
+    try:
+        body = await request.body()
+        body_text = body.decode("utf-8")
+    except Exception:
+        body_text = "<cannot read body>"
 
+    logger.error("Request validation error. Path: %s, Body: %s, Errors: %s",
+                 request.url.path, body_text, exc.errors())
+    # Orijinal 422 formatını dön
+    return JSONResponse(status_code=422, content={"detail": exc.errors(), "body": body_text})
 @app.exception_handler(HTTPException)
 async def http_exception_handler(_: Any, exc: HTTPException) -> JSONResponse:
     """HTTPException için standart JSON hata cevabı."""
@@ -108,15 +122,16 @@ async def health_check() -> HealthStatus:
 # /api/chat - Ana Sohbet Endpoint'i (FIXED)
 # ---------------------------------------------------------------------------
 
+# main.py (mevcut @app.post dekoratör'ünü koru, body'yi bu async fonksiyonla değiştir)
 @app.post(f"{API_PREFIX}/chat", response_model=ChatResponse)
 async def chat_endpoint(request: ChatRequest):
     """
-    ANA CHAT ENDPOINT
+    ANA CHAT ENDPOINT - conversation_history elemanlarını dict'e çevirir ve engine'e öyle yollar.
     """
     try:
         # Session ID oluştur
         session_id = request.session_id or str(uuid.uuid4())
-        
+
         # Mode dönüşümü
         mode_map = {
             "normal": ChatMode.NORMAL,
@@ -124,39 +139,71 @@ async def chat_endpoint(request: ChatRequest):
             "creative": ChatMode.CREATIVE,
             "code": ChatMode.CODE,
             "friend": ChatMode.FRIEND,
-            "uncensored": ChatMode.UNCENSORED  # YENİ: Sansürsüz mod
+            "uncensored": ChatMode.UNCENSORED
         }
-        mode = mode_map.get(request.mode, ChatMode.NORMAL)
-        
+        # request.mode muhtemelen string veya enum olabilir; güvenli şekilde al
+        mode = mode_map.get(request.mode, request.mode if isinstance(request.mode, ChatMode) else ChatMode.NORMAL)
+
         # Engine'i al
         engine = get_chat_engine()
-        
-        # Chat işle
+
+        # Gelen conversation_history'i normalize et (her zaman Dict listesi gönder)
+        raw_history = request.conversation_history or []
+        history_for_engine = []
+        for m in raw_history:
+            # Eğer zaten dict ise direkt ekle
+            if isinstance(m, dict):
+                history_for_engine.append(m)
+                continue
+
+            # Pydantic modellerin dict() metodu olur
+            if hasattr(m, "dict") and callable(getattr(m, "dict")):
+                try:
+                    history_for_engine.append(m.dict())
+                except Exception:
+                    # .dict() çağrısı başarısız olursa fallback olsun
+                    history_for_engine.append({
+                        "role": getattr(m, "role", "user"),
+                        "content": getattr(m, "content", "") or "",
+                        "timestamp": getattr(m, "timestamp", None)
+                    })
+                continue
+
+            # Genel fallback — bilinmeyen nesne türleri için attribute bazlı çevir
+            history_for_engine.append({
+                "role": getattr(m, "role", "user"),
+                "content": getattr(m, "content", "") or "",
+                "timestamp": getattr(m, "timestamp", None)
+            })
+
         logger.info(f"Chat isteği: {request.message[:50]}... (mode: {mode})")
-        
+        logger.debug(f"Normalized history for engine: {history_for_engine}")
+
+        # Chat işle (engine history olarak dict listesi bekliyorsa artık uyumlu)
         response = await engine.chat(
             message=request.message,
             user_id=request.user_id,
             session_id=session_id,
             mode=mode,
-            history=request.conversation_history
+            history=history_for_engine
         )
-        
+
         logger.info(f"Chat tamamlandı: {response.time:.2f}s, model: {response.model}")
-        
+
         # Response döndür
         return ChatResponse(
             response=response.content,
             session_id=session_id,
             model_used=response.model,
             processing_time=response.time,
-            quality_score=response.quality_score,
-            intent=response.intent
+            quality_score=getattr(response, "quality_score", None),
+            intent=getattr(response, "intent", None)
         )
-    
+
     except Exception as e:
         logger.error(f"❌ Chat hatası: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 # ---------------------------------------------------------------------------

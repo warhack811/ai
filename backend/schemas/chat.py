@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
-
+from enum import Enum
 from .common import (
     ChatMode,
     ChatSourceAnnotatedMessage,
@@ -59,6 +59,10 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = Field(
         default=None,
         description="Sohbet oturum id'si. Gönderilmezse backend yeni bir session oluşturabilir."
+    )
+    conversation_history: Optional[List[ChatMessage]] = Field(
+        default=None,
+        description="(Frontend tarafından gönderilen) son konuşma geçmişi. Liste ChatMessage tipinde olmalı."
     )
     safety_level: int = Field(default=0, ge=0, le=2)  # 0=sansürsüz, 1=dengeli, 2=güvenli
 
