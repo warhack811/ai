@@ -442,6 +442,8 @@ async def process_chat_enhanced(request: ChatRequest) -> ChatResponse:
             enhanced_answer = enhance_model_output(cleaned_answer, aggressive=False)
             logger.info(f"   🇹🇷 Layer 2: Turkish enhancement applied")
             
+            
+            
             # LAYER 3: ESKİ QUALITY VALIDATOR
             is_valid_old, quality_old = quality_validator.validate(enhanced_answer, normalized_message)
             logger.info(f"   ✓ Layer 3: Old quality = {quality_old:.2f}")

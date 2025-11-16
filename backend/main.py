@@ -6,12 +6,13 @@ main.py - UTF-8 ENCODING FIXED
 ✅ Türkçe karakter sorunu çözüldü
 """
 
+import logging
 from typing import Any
-
+import uuid
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-
+from services.ultimate_chat_engine import get_chat_engine, ChatMode
 from config import get_settings
 from schemas.chat import (
     ChatRequest,
@@ -39,6 +40,15 @@ app = FastAPI(
 
 API_PREFIX = settings.api_root_path or "/api"
 
+# ============================================
+# LOGGER KURULUMU
+# ============================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # CORS Ayarları
@@ -99,22 +109,54 @@ async def health_check() -> HealthStatus:
 # ---------------------------------------------------------------------------
 
 @app.post(f"{API_PREFIX}/chat", response_model=ChatResponse)
-async def chat_endpoint(
-    payload: ChatRequest,
-    _: None = Depends(rate_limiter_dependency),
-) -> ChatResponse:
+async def chat_endpoint(request: ChatRequest):
     """
-    Ana sohbet endpoint'i - UTF-8 encoding fixed
+    ANA CHAT ENDPOINT
     """
     try:
-        response = await process_chat(payload)
-        return response
-    except HTTPException:
-        raise
+        # Session ID oluştur
+        session_id = request.session_id or str(uuid.uuid4())
+        
+        # Mode dönüşümü
+        mode_map = {
+            "normal": ChatMode.NORMAL,
+            "research": ChatMode.RESEARCH,
+            "creative": ChatMode.CREATIVE,
+            "code": ChatMode.CODE,
+            "friend": ChatMode.FRIEND,
+            "uncensored": ChatMode.UNCENSORED  # YENİ: Sansürsüz mod
+        }
+        mode = mode_map.get(request.mode, ChatMode.NORMAL)
+        
+        # Engine'i al
+        engine = get_chat_engine()
+        
+        # Chat işle
+        logger.info(f"Chat isteği: {request.message[:50]}... (mode: {mode})")
+        
+        response = await engine.chat(
+            message=request.message,
+            user_id=request.user_id,
+            session_id=session_id,
+            mode=mode,
+            history=request.conversation_history
+        )
+        
+        logger.info(f"Chat tamamlandı: {response.time:.2f}s, model: {response.model}")
+        
+        # Response döndür
+        return ChatResponse(
+            response=response.content,
+            session_id=session_id,
+            model_used=response.model,
+            processing_time=response.time,
+            quality_score=response.quality_score,
+            intent=response.intent
+        )
+    
     except Exception as e:
-        # UTF-8 encoding için hata mesajını encode et
-        error_msg = str(e).encode('utf-8', errors='ignore').decode('utf-8')
-        raise HTTPException(status_code=500, detail=f"Internal error: {error_msg}") from e
+        logger.error(f"❌ Chat hatası: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ---------------------------------------------------------------------------
