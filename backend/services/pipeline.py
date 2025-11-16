@@ -34,7 +34,7 @@ from services import memory
 from services import rag_engine
 from services import safety_filter
 from services import profile_service
-
+from services.enhanced_pipeline import process_chat_enhanced
 logger = logging.getLogger(__name__)
 settings = get_settings()
 

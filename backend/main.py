@@ -8,7 +8,7 @@ main.py - FAS 2 COMPLETE VERSION
 
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, UploadFile, File
+from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from services.enhanced_pipeline import process_chat_enhanced
