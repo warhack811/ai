@@ -1,7 +1,9 @@
 """
-services/llm/complexity_scorer.py
-----------------------------------
-Query complexity scoring - Sorunu analiz edip 0-10 arası zorluk skoru verir
+services/llm/complexity_scorer.py - İYİLEŞTİRİLMİŞ
+---------------------------------------------------
+✅ Daha hassas skorlama
+✅ Öneri/karşılaştırma intent'leri eklendi
+✅ Gereksiz QWEN kullanımı azaltıldı
 """
 
 import re
@@ -10,13 +12,13 @@ from schemas.common import ChatMode, IntentLabel
 
 class ComplexityScorer:
     """
-    Mesajın karmaşıklığını skorlar ve uygun modeli seçmeye yardımcı olur
+    Mesajın karmaşıklığını skorlar
     
-    Skorlama:
-    0-3:   Basit (Phi yeterli)
-    4-6:   Orta (Mistral)
-    7-8:   Karmaşık (Qwen)
-    9-10:  Reasoning gerektiren (DeepSeek)
+    Yeni Skorlama:
+    0-3:   Basit → Phi
+    4-6:   Orta → Mistral (QWEN yerine!)
+    7-8:   Karmaşık → Mistral veya QWEN (dikkatli)
+    9-10:  Reasoning → DeepSeek
     """
     
     def score(self, query: str, mode: ChatMode, intent: IntentLabel = None) -> int:
@@ -29,88 +31,132 @@ class ComplexityScorer:
         score = 0
         query_lower = query.lower()
         
-        # 1. Uzunluk bazlı skorlama
+        # ============================================================
+        # 1. Basit Selamlaşma / Small Talk (En Düşük Öncelik)
+        # ============================================================
+        greeting_keywords = [
+            'merhaba', 'selam', 'hello', 'hi', 'hey', 'günaydın',
+            'iyi günler', 'nasılsın', 'how are you', "naber", "ne haber"
+        ]
         word_count = len(query.split())
+        
+        if any(kw in query_lower for kw in greeting_keywords) and word_count < 8:
+            return 1  # Direkt en düşük skor
+        
+        # ============================================================
+        # 2. Uzunluk Bazlı (Temel Skor)
+        # ============================================================
         if word_count < 5:
-            score += 0
-        elif word_count < 15:
+            score += 1
+        elif word_count < 12:
             score += 2
-        elif word_count < 30:
+        elif word_count < 25:
             score += 4
         else:
-            score += 6
+            score += 5  # Uzun sorular biraz daha yüksek
         
-        # 2. Mode bazlı skorlama
+        # ============================================================
+        # 3. Mode Bazlı Ayarlama
+        # ============================================================
         mode_scores = {
             ChatMode.NORMAL: 0,
             ChatMode.FRIEND: 0,
-            ChatMode.CODE: 3,
-            ChatMode.CREATIVE: 2,
-            ChatMode.RESEARCH: 4,
+            ChatMode.CODE: 2,        # Kod soruları orta seviye
+            ChatMode.CREATIVE: 1,    # Yaratıcı içerik orta seviye
+            ChatMode.RESEARCH: 3,    # Araştırma biraz daha yüksek
             ChatMode.TURKISH_TEACHER: 2,
         }
         score += mode_scores.get(mode, 0)
         
-        # 3. Kod isteği kontrolü
+        # ============================================================
+        # 4. Kod İsteği (Orta Seviye - Mistral Yeterli)
+        # ============================================================
         code_keywords = [
             'kod', 'code', 'program', 'fonksiyon', 'function', 
             'class', 'sınıf', 'python', 'javascript', 'java',
-            'algoritma', 'algorithm', 'debug', 'hata', 'error'
+            'algoritma', 'algorithm', 'debug', 'hata', 'error',
+            'yazılım', 'software', 'uygulama', 'app'
         ]
         if any(kw in query_lower for kw in code_keywords):
-            score += 3
-            # Kod + açıklama istiyorsa daha yüksek
-            if any(kw in query_lower for kw in ['açıkla', 'explain', 'neden', 'why']):
-                score += 2
+            score += 2  # 3'ten 2'ye düşürüldü (Mistral yeterli)
+            
+            # Sadece çok detaylı açıklama istiyorsa +1
+            if any(kw in query_lower for kw in ['detaylı açıkla', 'neden böyle', 'mantığı']):
+                score += 1
         
-        # 4. Analiz/düşünme gerektiren kelimeler
+        # ============================================================
+        # 5. Reasoning / Analiz Gerektiren (Yüksek)
+        # ============================================================
         reasoning_keywords = [
-            'neden', 'why', 'nasıl', 'how', 'açıkla', 'explain',
-            'analiz', 'analyze', 'karşılaştır', 'compare', 'fark',
-            'difference', 'avantaj', 'dezavantaj', 'pros', 'cons',
-            'strateji', 'strategy', 'plan', 'çöz', 'solve'
+            'neden', 'why', 'nasıl çalışır', 'how does it work',
+            'analiz et', 'analyze', 'mantığı', 'logic',
+            'strateji', 'strategy', 'çöz', 'solve',
+            'hesapla', 'calculate', 'kanıtla', 'prove'
         ]
         reasoning_count = sum(1 for kw in reasoning_keywords if kw in query_lower)
-        score += min(reasoning_count * 2, 4)  # Max 4 puan
+        score += min(reasoning_count * 2, 3)  # Max 3 puan
         
-        # 5. Çoklu soru/görev
+        # ============================================================
+        # 6. Karşılaştırma / Öneri (Orta-Yüksek)
+        # ============================================================
+        comparison_keywords = [
+            'karşılaştır', 'compare', 'fark', 'difference',
+            'hangisi', 'which one', 'vs', 'ile arasında',
+            'avantaj', 'dezavantaj', 'pros', 'cons',
+            'daha iyi', 'better', 'tercih', 'prefer'
+        ]
+        if any(kw in query_lower for kw in comparison_keywords):
+            score += 2  # Orta seviye (Mistral yeterli)
+        
+        recommendation_keywords = [
+            'öner', 'tavsiye', 'öneri', 'recommend', 'suggest',
+            'ne almalıyım', 'what should i', 'seçmeliyim', 'should i choose'
+        ]
+        if any(kw in query_lower for kw in recommendation_keywords):
+            score += 2  # Öneri de orta seviye
+        
+        # ============================================================
+        # 7. Çoklu Soru/Görev
+        # ============================================================
         question_marks = query.count('?')
         if question_marks > 1:
             score += 2
         
-        # 6. Özel karakterler / matematiksel içerik
-        if any(char in query for char in ['∫', '∑', 'π', '√', '≈', '≤', '≥']):
-            score += 2
+        # ============================================================
+        # 8. Matematiksel / Teknik İçerik
+        # ============================================================
+        if any(char in query for char in ['∫', '∑', 'π', '√', '≈', '≤', '≥', 'x²', 'f(x)']):
+            score += 3  # Matematik yüksek öncelik
         
-        # 7. Liste/numaralandırma isteği
+        # ============================================================
+        # 9. Liste/Numaralandırma (Düşük)
+        # ============================================================
         list_keywords = ['listele', 'list', 'say', 'enumerate', 'madde', 'örnekler']
         if any(kw in query_lower for kw in list_keywords):
-            score += 1
+            score += 1  # Liste basit iş
         
-        # 8. Selamlama/small talk (düşük skor)
-        greeting_keywords = [
-            'merhaba', 'selam', 'hello', 'hi', 'hey', 'günaydın',
-            'iyi günler', 'nasılsın', 'how are you', "naber", "naber"
-        ]
-        if any(kw in query_lower for kw in greeting_keywords) and word_count < 10:
-            return 1  # Direkt en düşük skor
-        
-        # 9. Intent bazlı ayarlama (varsa)
+        # ============================================================
+        # 10. Intent Bazlı Ayarlama (En Önemli!)
+        # ============================================================
         if intent:
             intent_adjustments = {
-                IntentLabel.SMALL_TALK: -2,
-                IntentLabel.QUESTION: 0,
-                IntentLabel.TASK_REQUEST: 1,
-                IntentLabel.EXPLAIN: 2,
-                IntentLabel.CODE_HELP: 3,
-                IntentLabel.SUMMARIZE: 2,
-                IntentLabel.TRANSLATE: 1,
-                IntentLabel.WEB_SEARCH: 2,
-                IntentLabel.DOCUMENT_QUESTION: 3,
+                IntentLabel.SMALL_TALK: -3,           # En düşük
+                IntentLabel.TRANSLATE: -1,            # Basit
+                IntentLabel.SUMMARIZE: 0,             # Orta
+                IntentLabel.QUESTION: 0,              # Orta
+                IntentLabel.EXPLAIN: 1,               # Orta-yüksek
+                IntentLabel.CODE_HELP: 1,             # Orta (Mistral yeterli)
+                IntentLabel.TASK_REQUEST: 2,          # Orta-yüksek
+                IntentLabel.DOCUMENT_QUESTION: 2,     # Orta-yüksek
+                IntentLabel.WEB_SEARCH: 2,            # Orta-yüksek
+                IntentLabel.EMOTIONAL_SUPPORT: 3,     # Yüksek (QWEN lazım)
+                IntentLabel.REFLECTION: 3,            # Yüksek (self-reflection)
             }
             score += intent_adjustments.get(intent, 0)
         
-        # Final: 0-10 arası sınırla
+        # ============================================================
+        # 11. Final: 0-10 Arası Sınırla
+        # ============================================================
         final_score = max(0, min(10, score))
         
         return final_score
@@ -118,28 +164,30 @@ class ComplexityScorer:
     def get_recommended_model(self, score: int) -> str:
         """
         Complexity score'a göre model önerisi
+        
+        UPDATED: Mistral daha çok kullanılıyor
         """
         if score <= 3:
             return "phi"
         elif score <= 6:
-            return "mistral"
+            return "mistral"  # QWEN yerine Mistral!
         elif score <= 8:
-            return "qwen"
+            return "mistral"  # Hala Mistral (QWEN sadece 9-10'da)
         else:
-            return "deepseek"
+            return "qwen"     # Sadece çok karmaşık durumlarda
     
     def explain_score(self, score: int) -> str:
         """
         Score'u açıkla (debug için)
         """
         if score <= 3:
-            return "Basit soru - Hızlı cevap yeterli"
+            return "Basit soru - Phi yeterli"
         elif score <= 6:
-            return "Orta zorluk - Standart işlem"
+            return "Orta zorluk - Mistral yeterli"
         elif score <= 8:
-            return "Karmaşık - Detaylı analiz gerekli"
+            return "Karmaşık - Mistral veya QWEN"
         else:
-            return "Çok karmaşık - Derin düşünme gerekli"
+            return "Çok karmaşık - QWEN veya DeepSeek"
 
 
 # Global instance

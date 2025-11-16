@@ -47,8 +47,8 @@ def build_smart_context(
     # ------------------------------------------
     if profile_context and profile_context.strip():
         profile_text = profile_context.strip()
-        if len(profile_text) > 400:
-            profile_text = profile_text[:397] + "..."
+        if len(profile_text) > 300:
+            profile_text = profile_text[:297] + "..."
         
         context_parts.append(profile_text)
         context_parts.append("")  # Boş satır

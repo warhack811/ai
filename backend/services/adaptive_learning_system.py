@@ -602,3 +602,64 @@ def get_model_recommendation(
 def get_learning_statistics() -> Dict:
     """Utility: İstatistikler"""
     return _adaptive_learning.get_statistics()
+
+def get_learning_stats() -> dict:
+    """
+    Learning system istatistiklerini döndür
+    
+    Returns:
+        dict: İstatistikler
+    """
+    global _feedback_events
+    
+    if not _feedback_events:
+        return {
+            "total_events": 0,
+            "positive": 0,
+            "negative": 0,
+            "neutral": 0,
+            "by_model": {},
+            "by_intent": {},
+            "avg_response_time_ms": 0
+        }
+    
+    # İstatistikleri hesapla
+    total = len(_feedback_events)
+    positive = sum(1 for e in _feedback_events if e.implicit_signal == "positive")
+    negative = sum(1 for e in _feedback_events if e.implicit_signal == "negative")
+    neutral = sum(1 for e in _feedback_events if e.implicit_signal == "neutral")
+    
+    # Model bazında
+    by_model = {}
+    for event in _feedback_events:
+        model = event.model_used or "unknown"
+        if model not in by_model:
+            by_model[model] = {"count": 0, "positive": 0, "negative": 0}
+        by_model[model]["count"] += 1
+        if event.implicit_signal == "positive":
+            by_model[model]["positive"] += 1
+        elif event.implicit_signal == "negative":
+            by_model[model]["negative"] += 1
+    
+    # Intent bazında
+    by_intent = {}
+    for event in _feedback_events:
+        intent = event.intent or "unknown"
+        if intent not in by_intent:
+            by_intent[intent] = {"count": 0, "positive": 0}
+        by_intent[intent]["count"] += 1
+        if event.implicit_signal == "positive":
+            by_intent[intent]["positive"] += 1
+    
+    # Ortalama response time
+    avg_time = sum(e.response_time_ms for e in _feedback_events if e.response_time_ms) / total if total > 0 else 0
+    
+    return {
+        "total_events": total,
+        "positive": positive,
+        "negative": negative,
+        "neutral": neutral,
+        "by_model": by_model,
+        "by_intent": by_intent,
+        "avg_response_time_ms": avg_time
+    }
