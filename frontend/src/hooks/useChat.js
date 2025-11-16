@@ -9,8 +9,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
-
-const API_URL = 'http://localhost:8000/api';
+import { API_BASE_URL } from '../utils/constants';
 
 export const useChat = (initialSessionId = null) => {
   const [messages, setMessages] = useState([]);
@@ -75,7 +74,7 @@ export const useChat = (initialSessionId = null) => {
 
     try {
       // API request
-      const response = await axios.post(`${API_URL}/chat`, {
+      const response = await axios.post(`${API_BASE_URL}/chat`, {
         message: text,
         mode: settings.mode || 'normal',
         use_web_search: settings.useWebSearch !== undefined ? settings.useWebSearch : true,
