@@ -1,0 +1,122 @@
+from __future__ import annotations
+
+from typing import Any, Dict, Optional
+
+from core.config import get_settings
+from core.logger import get_logger
+from router.groq_decider import get_groq_client
+
+settings = get_settings()
+logger = get_logger(__name__)
+
+
+async def generate_answer(
+    message: str,
+    analysis: Optional[Dict[str, Any]] = None,
+    context: Optional[str] = None,
+) -> str:
+    client = get_groq_client()
+    if client is None:
+        return f"(GROQ_REPLY STUB) Şu an gerçek Groq cevaplayamıyor, bu yüzden mesajını sana geri okuyorum:\n{message}"
+
+    system_prompt = """
+Sen Mami AI adlı bir sohbet asistanısın.
+...
+"""
+
+    try:
+        messages = [
+            {"role": "system", "content": system_prompt},
+        ]
+
+        if context:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "Aşağıda internetten veya başka kaynaklardan derlenmiş ek bilgiler var. "
+                        "Cevabını bunlara dayanarak, ama tutarsızlık varsa bunu da belirterek ver:\n\n"
+                        f"{context}"
+                    ),
+                }
+            )
+
+        messages.append({"role": "user", "content": message})
+
+        completion = client.chat.completions.create(
+            model=settings.GROQ_DECIDER_MODEL,
+            messages=messages,
+        )
+        content = completion.choices[0].message.content
+        return content or "(Boş bir cevap döndü gibi görünüyor.)"
+    except Exception as e:
+        logger.error(f"Groq ANSWERER çağrısında hata: {e}")
+        return f"(GROQ_REPLY STUB - HATA) Groq cevap üretirken bir sorun çıktı, bu yüzden mesajını sana geri okuyorum:\n{message}"
+def groq_failed_safety(content: str) -> bool:
+    """
+    Groq'un güvenlik, etik veya uygunluk nedeniyle cevap vermekten kaçındığı
+    Türkçe kalıpları tespit eder.
+    """
+    if not content:
+        return False
+
+    text = content.lower()
+
+    hard_triggers = [
+        "yardımcı olamam",
+        "yardimci olamam",
+        "bu isteği yerine getiremem",
+        "bu isteği yerine getiremiyorum",
+        "isteğini yerine getiremem",
+        "istegini yerine getiremem",
+        "politikalar gereği",
+        "içerik politikasına aykırı",
+        "icerik politikasina aykiri",
+        "bunu yapamam",
+        "bunu sağlayamam",
+        "bunu saglayamam",
+        "güvenlik nedeniyle",
+        "guvenlik nedeniyle",
+        "etik değil",
+        "etik degil",
+        "yasak",
+    ]
+
+    soft_triggers = [
+        # Senin gördüğün cevaptan:
+        "senin talebini dikkate almıyorum",
+        "senin talebini dikkate almiyorum",
+        "küfür içeren içerik paylaşmamaya özen gösteriyorum",
+        "kufur içeren içerik paylaşmamaya özen gösteriyorum",
+        "kufur içeren içerik paylaşmamaya ozen gosteriyorum",
+        "küfür içeren içerik",
+        "kufur içeren içerik",
+
+        "küfür veya argo ifadelerin kullanımını önermiyorum",
+        "kufur veya argo ifadelerin kullanimini onermiyorum",
+
+        "rahatsız edici olabilir",
+        "rahatsiz edici olabilir",
+        "uygun olmayabilir",
+        "uygun değil",
+        "uygun degil",
+        "daha olumlu bir dil",
+        "daha yapıcı bir dil",
+        "daha yapici bir dil",
+        "bunu yapmak istemem",
+        "kullanmanı tavsiye etmem",
+        "kullanmani tavsiye etmem",
+        "bu tarz ifadeleri kullanmak istemem",
+    ]
+
+    if any(t in text for t in hard_triggers):
+        return True
+
+    if any(t in text for t in soft_triggers):
+        return True
+
+    # Kısa, özürlü, kaçınma tonlu cevaplar için ekstra heuristik
+    if ("üzgünüm" in text or "uzgunum" in text or "maalesef" in text) and len(text) < 500:
+        return True
+
+    return False

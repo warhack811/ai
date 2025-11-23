@@ -1,0 +1,143 @@
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, asdict
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Literal, Optional
+
+from core.logger import get_logger
+
+logger = get_logger(__name__)
+
+DATA_DIR = Path("data")
+RAG_ROOT = DATA_DIR / "rag"
+RAG_ROOT.mkdir(parents=True, exist_ok=True)
+
+Scope = Literal["global", "user", "conversation", "web"]
+
+
+@dataclass
+class RagDocument:
+    id: str
+    scope: Scope
+    owner: Optional[str]
+    text: str
+    created_at: str
+    metadata: Dict[str, Any]
+
+
+def _rag_path() -> Path:
+    return RAG_ROOT / "store.jsonl"
+
+
+def _now_str() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def add_document(
+    text: str,
+    scope: Scope = "global",
+    owner: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> RagDocument:
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("Boş RAG dokümanı eklenemez.")
+
+    if metadata is None:
+        metadata = {}
+
+    doc_id = f"doc_{int(datetime.now().timestamp() * 1000)}"
+    item = RagDocument(
+        id=doc_id,
+        scope=scope,
+        owner=owner,
+        text=text,
+        created_at=_now_str(),
+        metadata=metadata,
+    )
+
+    path = _rag_path()
+    line = json.dumps(asdict(item), ensure_ascii=False)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+    logger.info("[RAG] Yeni doküman eklendi: scope=%s owner=%s meta=%s", scope, owner, metadata)
+    return item
+
+
+def _tokenize(s: str) -> List[str]:
+    s = (s or "").lower()
+    for ch in [",", ".", "?", "!", ":", ";", "(", ")", "[", "]", "{", "}", "\\", "\"", "'", "/", "|"]:
+        s = s.replace(ch, " ")
+    return [t for t in s.split() if t]
+
+
+def _iter_docs() -> List[RagDocument]:
+    path = _rag_path()
+    if not path.exists():
+        return []
+    res: List[RagDocument] = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+                res.append(
+                    RagDocument(
+                        id=data.get("id", ""),
+                        scope=data.get("scope", "global"),
+                        owner=data.get("owner"),
+                        text=data.get("text", ""),
+                        created_at=data.get("created_at", ""),
+                        metadata=data.get("metadata") or {},
+                    )
+                )
+            except json.JSONDecodeError:
+                continue
+    return res
+
+
+def search_documents(
+    query: str,
+    owner: Optional[str] = None,
+    scopes: Optional[List[Scope]] = None,
+    max_items: int = 5,
+) -> List[RagDocument]:
+    """
+    Yine basit kelime benzerliğiyle RAG araması.
+    İleride embedding ile güçlendirilebilir.
+    """
+    query_tokens = set(_tokenize(query))
+    if not query_tokens:
+        return []
+
+    if scopes is None:
+        scopes = ["global", "user", "conversation", "web"]
+
+    docs = _iter_docs()
+    scored: List[tuple[float, RagDocument]] = []
+
+    for doc in docs:
+        if doc.scope not in scopes:
+            continue
+        if owner is not None:
+            if doc.scope in ("user", "conversation") and doc.owner != owner:
+                continue
+
+        tokens = set(_tokenize(doc.text))
+        if not tokens:
+            continue
+
+        overlap = len(query_tokens & tokens)
+        if overlap == 0:
+            continue
+
+        score = overlap / len(query_tokens)
+        scored.append((score, doc))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [doc for _, doc in scored[:max_items]]

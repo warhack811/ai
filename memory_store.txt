@@ -1,0 +1,112 @@
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, asdict
+from datetime import datetime
+from pathlib import Path
+from typing import List, Optional
+
+from core.logger import get_logger
+
+logger = get_logger(__name__)
+
+DATA_DIR = Path("data")
+MEMORY_ROOT = DATA_DIR / "memory"
+MEMORY_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+@dataclass
+class MemoryItem:
+    text: str
+    created_at: str
+    importance: float = 0.5
+    tags: Optional[List[str]] = None
+
+
+def _memory_path(username: str) -> Path:
+    return MEMORY_ROOT / f"{username}.json"
+
+
+def _load_raw(username: str) -> List[dict]:
+    path = _memory_path(username)
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, list):
+            return []
+        return data
+    except json.JSONDecodeError:
+        logger.error("Memory dosyası bozuk görünüyor: %s", path)
+        return []
+
+
+def _save_raw(username: str, items: List[dict]) -> None:
+    path = _memory_path(username)
+    path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def list_memories(username: str) -> List[MemoryItem]:
+    data = _load_raw(username)
+    res: List[MemoryItem] = []
+    for item in data:
+        try:
+            res.append(
+                MemoryItem(
+                    text=item.get("text", ""),
+                    created_at=item.get("created_at", ""),
+                    importance=float(item.get("importance", 0.5)),
+                    tags=item.get("tags") or None,
+                )
+            )
+        except Exception:
+            continue
+    return res
+
+
+def add_memory(username: str, text: str, importance: float = 0.5, tags: Optional[List[str]] = None) -> MemoryItem:
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("Boş memory kaydedilemez.")
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    item = MemoryItem(text=text, created_at=now, importance=importance, tags=tags)
+    current = _load_raw(username)
+    current.append(asdict(item))
+    _save_raw(username, current)
+    logger.info("[MEMORY] %s için yeni kayıt eklendi: %s", username, text)
+    return item
+
+
+def _tokenize(s: str) -> List[str]:
+    s = (s or "").lower()
+    for ch in [",", ".", "?", "!", ":", ";", "(", ")", "[", "]", "{", "}", "\\", "\"", "'", "/", "|"]:
+        s = s.replace(ch, " ")
+    return [t for t in s.split() if t]
+
+
+def search_memories(username: str, query: str, max_items: int = 5) -> List[MemoryItem]:
+    """
+    Çok basit kelime benzerliği ile memory içinden ilgili kayıtları bulur.
+    İleride embedding ile değiştirilebilir.
+    """
+    query_tokens = set(_tokenize(query))
+    if not query_tokens:
+        return []
+
+    items = list_memories(username)
+    scored: List[tuple[float, MemoryItem]] = []
+
+    for item in items:
+        mem_tokens = set(_tokenize(item.text))
+        if not mem_tokens:
+            continue
+        overlap = len(query_tokens & mem_tokens)
+        if overlap == 0:
+            continue
+        score = overlap / len(query_tokens)
+        score = score * (0.7 + 0.3 * float(item.importance))
+        scored.append((score, item))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [it for _, it in scored[:max_items]]

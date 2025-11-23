@@ -1,0 +1,100 @@
+from __future__ import annotations
+
+import base64
+import time
+from pathlib import Path
+
+import requests
+
+from core.config import get_settings
+from core.logger import get_logger
+
+logger = get_logger(__name__)
+settings = get_settings()
+
+# Üretilen resimleri kaydedeceğimiz klasör
+IMAGES_ROOT = Path("data") / "images"
+IMAGES_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+def _build_forge_url() -> str:
+    base = settings.FORGE_BASE_URL.rstrip("/")
+    path = settings.FORGE_TXT2IMG_PATH
+    if not path.startswith("/"):
+        path = "/" + path
+    return base + path
+
+
+def generate_image_via_forge(prompt: str) -> str:
+    """
+    Stable Diffusion WebUI Forge (A1111 uyumlu) üzerinden
+    Flux modelini kullanarak resim üretir.
+
+    DÖNÜŞ:
+      Başarılıysa: "/images/flux_123456789.png" gibi bir URL (frontend bunu <img> ile gösterecek)
+      Hata varsa:  "(IMAGE ERROR) ..." şeklinde bir metin
+    """
+    url = _build_forge_url()
+    logger.info(f"[FLUX] Forge txt2img endpoint: {url}")
+
+    # Burayı kendi Forge kurulumuna göre ince ayar yapabilirsin.
+    payload = {
+    "prompt": prompt,
+    "steps": 20,              # Flux için 20-25 yeterli
+    "width": 1024,            # ÖNEMLİ: Flux 1024x1024 native çalışır, 768 bazen sorun yaratabilir.
+    "height": 1024,
+    "cfg_scale": 1.0,         # Bu doğru, Flux için 1.0 kalmalı.
+    "sampler_name": "Euler",  # EKSİK OLAN BU: Flux Euler ister.
+    "scheduler": "Simple",    # EKSİK OLAN BU: Forge'da Flux için "Simple" veya "Beta" gerekir.
+    "distilled_cfg_scale": 3.5 # Eğer modelin Flux Dev ise bu parametreye ihtiyaç duyabilir.
+}
+
+    # Eğer belirli bir checkpoint kullanmak istiyorsan:
+    if settings.FORGE_FLUX_CHECKPOINT:
+        payload.setdefault("override_settings", {})["sd_model_checkpoint"] = settings.FORGE_FLUX_CHECKPOINT
+
+    try:
+        resp = requests.post(url, json=payload, timeout=settings.FORGE_TIMEOUT)
+        resp.raise_for_status()
+    except Exception as e:
+        logger.error(f"[FLUX] Forge isteği hata verdi: {e}")
+        return f"(IMAGE ERROR) Forge isteğinde hata oluştu: {e}"
+
+    try:
+        data = resp.json()
+    except Exception as e:
+        logger.error(f"[FLUX] Forge yanıtı JSON parse edilemedi: {e}")
+        return f"(IMAGE ERROR) Forge yanıtı JSON değil: {e}"
+
+    images = data.get("images") or []
+    if not images:
+        logger.error(f"[FLUX] Forge yanıtında 'images' listesi boş: {data}")
+        return "(IMAGE ERROR) Forge yanıtında resim bulunamadı."
+
+    b64_str = images[0]
+
+    # Bazı kurulumlarda "data:image/png;base64,..." prefix'i geliyor, onu temizle
+    if b64_str.startswith("data:"):
+        b64_str = b64_str.split(",", 1)[-1]
+
+    try:
+        img_bytes = base64.b64decode(b64_str)
+    except Exception as e:
+        logger.error(f"[FLUX] Base64 decode hatası: {e}")
+        return f"(IMAGE ERROR) Base64 decode hatası: {e}"
+
+    ts = int(time.time())
+    filename = f"flux_{ts}.png"
+    out_path = IMAGES_ROOT / filename
+
+    try:
+        with out_path.open("wb") as f:
+            f.write(img_bytes)
+    except Exception as e:
+        logger.error(f"[FLUX] Resim dosyası yazılamadı: {e}")
+        return f"(IMAGE ERROR) Resim dosyası yazılamadı: {e}"
+
+    logger.info(f"[FLUX] Resim kaydedildi: {out_path}")
+
+    # Frontend buraya <img src="..."> diye erişecek
+    return f"/images/{filename}"

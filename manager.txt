@@ -1,0 +1,82 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import List, Dict, Any
+
+from core.logger import get_logger
+from core.config import get_settings
+from search.providers.serper import serper_search, SerperResult
+from search.providers.duck import duck_search, DuckResult
+
+logger = get_logger(__name__)
+settings = get_settings()
+
+
+@dataclass
+class SearchQuery:
+    id: str
+    query: str
+
+
+@dataclass
+class SearchSnippet:
+    title: str
+    url: str
+    snippet: str
+
+
+def _convert_serper_results(results: List[SerperResult]) -> List[SearchSnippet]:
+    return [
+        SearchSnippet(title=r.title, url=r.url, snippet=r.snippet)
+        for r in results
+    ]
+
+
+def _convert_duck_results(results: List[DuckResult]) -> List[SearchSnippet]:
+    return [
+        SearchSnippet(title=r.title, url=r.url, snippet=r.snippet)
+        for r in results
+    ]
+
+
+def search_queries(query_items: List[Dict[str, str]]) -> Dict[str, List[SearchSnippet]]:
+    """
+    DECIDER'dan gelen 'queries' listesini alır.
+
+    Provider sırası:
+      1) Serper.dev (Google Search) -> ana kaynak
+      2) DuckDuckGo -> yedek
+    """
+    queries: List[SearchQuery] = []
+    for idx, q in enumerate(query_items):
+        queries.append(
+            SearchQuery(
+                id=q.get("id", f"q{idx+1}"),
+                query=q.get("query", ""),
+            )
+        )
+
+    results: Dict[str, List[SearchSnippet]] = {}
+
+    for q in queries:
+        if not q.query:
+            results[q.id] = []
+            continue
+
+        logger.info(f"[SEARCH] query_id={q.id} query={q.query!r}")
+
+        snippets: List[SearchSnippet] = []
+
+        # 1) Serper ile dene
+        serper_results: List[SerperResult] = serper_search(q.query, max_results=5)
+        if serper_results:
+            snippets = _convert_serper_results(serper_results)
+        else:
+            # 2) Serper sonuç vermezse / hata olursa Duck'a düş
+            duck_results: List[DuckResult] = duck_search(q.query, max_results=5)
+            if duck_results:
+                snippets = _convert_duck_results(duck_results)
+
+        results[q.id] = snippets
+
+    return results

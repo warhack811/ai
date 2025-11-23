@@ -1,0 +1,85 @@
+from __future__ import annotations
+
+import threading
+import queue
+from typing import Callable, Optional
+
+from core.logger import get_logger
+from image.flux_stub import generate_image_via_forge
+from image.gpu_state import switch_to_flux, switch_to_gemma
+
+logger = get_logger(__name__)
+
+
+class ImageJob:
+    def __init__(self, username: str, prompt: str, on_done: Callable[[str], None]):
+        self.username = username
+        self.prompt = prompt
+        self.on_done = on_done
+
+
+class ImageJobQueue:
+    """
+    Basit bir arka plan image kuyruğu.
+    Tek worker thread var, gelen işleri sırayla işliyor.
+    """
+
+    def __init__(self):
+        self._queue: "queue.Queue[ImageJob]" = queue.Queue()
+        self._worker_thread = threading.Thread(
+            target=self._worker_loop,
+            name="image-job-worker",
+            daemon=True,
+        )
+        self._worker_thread.start()
+        logger.info("[IMAGE_QUEUE] ImageJobQueue başlatıldı.")
+
+    def add_job(self, job: ImageJob) -> None:
+        """
+        Yeni bir image job kuyruğa ekler.
+        """
+        logger.info(
+            "[IMAGE_QUEUE] Yeni iş eklendi: user=%s prompt=%.60r",
+            job.username,
+            job.prompt,
+        )
+        self._queue.put(job)
+
+    def _worker_loop(self) -> None:
+        while True:
+            job: ImageJob = self._queue.get()
+            try:
+                result = self._process_image_job(job)
+                try:
+                    job.on_done(result)
+                except Exception as cb_err:
+                    logger.error(f"[IMAGE_QUEUE] Callback hatası: {cb_err}")
+            except Exception as e:
+                logger.error(f"[IMAGE_QUEUE] İş işlenirken hata: {e}")
+            finally:
+                self._queue.task_done()
+
+    def _process_image_job(self, job: ImageJob) -> str:
+        """
+        Asıl image işini burada yapıyoruz.
+        - GPU'yu Flux moduna al
+        - Forge üzerinden generate_image_via_forge ile resmi üret
+        - İş bitince tekrar Gemma moduna dön
+        """
+        logger.info("[IMAGE_QUEUE] İşleniyor: user=%s", job.username)
+
+        switch_to_flux()
+        try:
+            result = generate_image_via_forge(job.prompt)
+        finally:
+            # Her durumda Gemma'ya dönmeye çalış
+            try:
+                switch_to_gemma()
+            except Exception as e:
+                logger.error(f"[IMAGE_QUEUE] Gemma'ya dönerken hata: {e}")
+
+        return result
+
+
+# Tekil queue instance'ı
+job_queue = ImageJobQueue()

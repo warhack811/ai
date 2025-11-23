@@ -1,0 +1,92 @@
+from __future__ import annotations
+
+from typing import Dict, Any
+
+from core.logger import get_logger
+from search.manager import search_queries
+from router.groq_answerer import generate_answer
+from core.rag_store import add_document
+from router.groq_decider import decide_rag_storage
+
+
+logger = get_logger(__name__)
+
+
+async def handle_internet_action(
+    decision: Dict[str, Any],
+    username: str,
+    original_message: str,
+) -> str:
+    internet_info = decision.get("internet") or {}
+    queries = internet_info.get("queries") or []
+
+    if not queries:
+        return "(INTERNET) Aksiyon seçildi ama 'queries' listesi boş geldi."
+
+    logger.info(f"[INTERNET] user={username} için {len(queries)} sorgu işlenecek.")
+
+    # 1) Arama sonuçlarını çek
+    search_results = search_queries(queries)
+
+    # Herhangi bir sorgu için en az bir snippet var mı?
+    any_results = any(search_results.get(q.get("id", ""), []) for q in queries)
+
+    # 2) Context metnini oluştur
+    context_lines: list[str] = []
+
+    if not any_results:
+        # Hiç sonuç yoksa, Groq'a durumu açıklayıp genel bilgisini kullanmasını iste
+        context_lines.append(
+            "Not: Şu anda kullandığım arama motoru hız/limit nedeniyle sonuç döndüremedi. "
+            "Bu yüzden elinde güncel web sonucu yok. "
+            "Yine de kendi genel ekonomik bilginle, bu soruyu mantıklı ve anlaşılır şekilde cevapla."
+        )
+    else:
+        for q in queries:
+            qid = q.get("id", "?")
+            qtext = q.get("query", "")
+            context_lines.append(f"Sorgu {qid}: {qtext}")
+
+            snippets = search_results.get(qid, [])
+            if not snippets:
+                context_lines.append("  - Bu sorgu için sonuç bulunamadı.")
+                continue
+
+            for snip in snippets[:5]:
+                context_lines.append(f"  - Başlık: {snip.title}")
+                context_lines.append(f"    URL: {snip.url}")
+                context_lines.append(f"    Özet: {snip.snippet}")
+                context_lines.append("")
+
+    context_text = "\n".join(context_lines) if context_lines else None
+
+        # 3) Groq ANSWERER'dan nihai cevabı iste
+    answer = await generate_answer(
+        message=original_message,
+        analysis=decision.get("analysis"),
+        context=context_text,
+    )
+
+    # 4) Cevap RAG için değerliyse depoya kaydet (Groq kararı ile)
+    try:
+        rag_decision = await decide_rag_storage(original_message, answer)
+        if rag_decision.get("store"):
+            # Artık answer'ın tamamını kaydediyoruz
+            text_to_store = answer.strip()
+            if text_to_store:
+                add_document(
+                    text=text_to_store,
+                    scope="web",
+                    owner=username,
+                    metadata={
+                        "source": "internet",
+                        "original_query": original_message,
+                    },
+                )
+                logger.info("[RAG] İnternet cevabı (tam metin) RAG deposuna kaydedildi.")
+    except Exception as e:
+        logger.error(f"RAG otomatik kaydı sırasında hata: {e}")
+
+    return answer
+
+

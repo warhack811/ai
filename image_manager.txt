@@ -1,0 +1,85 @@
+from __future__ import annotations
+
+from typing import Callable, Dict, Any
+
+from image.job_queue import job_queue, ImageJob
+from image.flux_stub import generate_image_via_forge
+from image.gpu_state import switch_to_flux, switch_to_gemma
+from core.logger import get_logger
+
+logger = get_logger(__name__)
+
+# 🔹 Basit image kuyruğu istatistikleri
+_image_stats: Dict[str, Any] = {
+    "total_jobs": 0,        # bugüne kadar kaç image işi alındı
+    "pending_jobs": 0,      # şu an sırada kaç iş var (yaklaşık)
+    "last_username": None,  # son image isteyen kullanıcı
+    "last_prompt": None,    # son image prompt’unun kısaltılmış hali
+}
+
+
+def _on_job_added(username: str, prompt: str) -> None:
+    _image_stats["total_jobs"] += 1
+    _image_stats["pending_jobs"] += 1
+    _image_stats["last_username"] = username
+    # Prompt çok uzun olmasın
+    _image_stats["last_prompt"] = (prompt[:120] + "…") if len(prompt) > 120 else prompt
+
+
+def _on_job_finished() -> None:
+    if _image_stats["pending_jobs"] > 0:
+        _image_stats["pending_jobs"] -= 1
+
+
+def get_image_queue_stats() -> Dict[str, Any]:
+    """
+    Admin paneli için image kuyruğu hakkında basit istatistik döner.
+    """
+    return dict(_image_stats)
+
+
+def request_image_generation(username: str, prompt: str, callback: Callable[[str], None]):
+    """
+    Kullanıcıdan gelen resim isteğini kuyruk sistemine gönderir.
+    İstatistikleri de günceller.
+    """
+    _on_job_added(username, prompt)
+
+    # Job bittiğinde hem istatistik güncellensin hem asıl callback çalışsın
+    def wrapped_callback(result: str) -> None:
+        _on_job_finished()
+        try:
+            callback(result)
+        except Exception as e:
+            logger.error(f"[IMAGE_MANAGER] Callback çalışırken hata: {e}")
+
+    job = ImageJob(username, prompt, on_done=wrapped_callback)
+    job_queue.add_job(job)
+
+    
+def generate_image_sync(username: str, prompt: str) -> str:
+    """
+    Kuyruk istatistiklerini güncelleyerek Forge/Flux üzerinden senkron resim üretir.
+    - Kullanıcıdan gelen prompt'u alır
+    - GPU state'i Flux'a çevirir (simülasyon)
+    - Forge'a istek gönderir
+    - Bittiğinde tekrar Gemma'ya döner
+    - Sohbette kullanılacak metni döndürür
+    """
+    _on_job_added(username, prompt)
+    try:
+        switch_to_flux()
+        image_url = generate_image_via_forge(prompt)
+        # Hata geldiyse direkt döndür
+        if image_url.startswith("(IMAGE ERROR)"):
+            return f"[IMAGE] {image_url}"
+        # Başarılıysa standardize cevap:
+        return f"[IMAGE] Resminiz oluşturuldu.\nIMAGE_PATH: {image_url}"
+    except Exception as e:
+        logger.error(f"[IMAGE_MANAGER] generate_image_sync hata: {e}")
+        return f"[IMAGE] Resim üretilirken bir hata oluştu: {e}"
+    finally:
+        try:
+            switch_to_gemma()
+        finally:
+            _on_job_finished()

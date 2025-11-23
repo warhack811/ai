@@ -1,0 +1,72 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import List
+
+import requests
+
+from core.config import get_settings
+from core.logger import get_logger
+
+logger = get_logger(__name__)
+settings = get_settings()
+
+
+@dataclass
+class SerperResult:
+    title: str
+    url: str
+    snippet: str
+
+
+def serper_search(query: str, max_results: int = 5) -> List[SerperResult]:
+    """
+    Serper.dev üzerinden Google araması yapar.
+    SERPER_API_KEY yoksa veya hata olursa boş liste döner.
+    """
+    api_key = settings.SERPER_API_KEY
+    endpoint = settings.SERPER_ENDPOINT
+
+    if not api_key:
+        logger.info("[SERPER] API key ayarlı değil, bu provider devre dışı.")
+        return []
+
+    headers = {
+        "X-API-KEY": api_key,
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "q": query,
+        "gl": "tr",  # ülke: Türkiye
+        "hl": "tr",  # dil: Türkçe
+        "num": max_results,
+    }
+
+    try:
+        resp = requests.post(endpoint, headers=headers, json=payload, timeout=2.0)
+        resp.raise_for_status()
+        data = resp.json()
+
+        organic = data.get("organic", [])
+        results: List[SerperResult] = []
+        for item in organic[:max_results]:
+            title = item.get("title") or ""
+            url = item.get("link") or item.get("url") or ""
+            snippet = item.get("snippet") or item.get("description") or ""
+            if not title and not snippet:
+                continue
+
+            results.append(
+                SerperResult(
+                    title=title,
+                    url=url,
+                    snippet=snippet,
+                )
+            )
+
+        logger.info(f"[SERPER] '{query}' için {len(results)} sonuç döndü.")
+        return results
+
+    except Exception as e:
+        logger.warning(f"[SERPER] Arama sırasında sorun: {e}")
+        return []

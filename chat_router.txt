@@ -1,0 +1,304 @@
+from __future__ import annotations
+
+from typing import Optional
+
+from core.logger import get_logger
+from router.groq_decider import (
+    run_decider,
+    run_decider_stub,                # ← eklenecek
+    decide_memory_storage,
+    summarize_conversation_for_rag,   # 🔥 yeni
+)
+from router.search_router import handle_internet_action
+from auth.user_manager import get_user_by_username
+from ollama.gemma_handler import run_local_chat
+from image.image_manager import request_image_generation, generate_image_sync
+from router.groq_answerer import generate_answer
+
+# Hafıza ve RAG
+from core.conversation_store import get_recent_context
+from core.memory_store import search_memories, add_memory
+from core.rag_store import search_documents
+
+logger = get_logger(__name__)
+
+async def _build_image_prompt_with_bela(username: str, base_prompt: str) -> str:
+    """
+    Kullanıcının (genelde Türkçe) görsel isteğini,
+    Bela (Gemma) kullanarak detaylı ve İngilizce bir image prompt'a çevirir.
+    Beklenen format: 'prompt: <ingilizce prompt>'
+    """
+    instruction = (
+        "Aşağıda bir kullanıcının görsel isteği var.\n"
+        "Görevin:\n"
+        "- Bu isteği bir text-to-image (metinden görsele) model için çok detaylı, tek satırlık bir prompt'a dönüştür.\n"
+        "- Son prompt TAMAMEN İngilizce olmalı.\n"
+        "- Ortam, atmosfer, ışık, kamera açısı, kompozisyon, stil, kalite, çözünürlük gibi detaylar ekle.\n"
+        "- Cevap formatın ŞUNA UYMALI:\n"
+        "prompt: <sadece İngilizce prompt>\n"
+        "- 'prompt:' kelimesi dışında açıklama, çeviri notu, fazladan cümle yazma.\n\n"
+        f"Kullanıcı isteği: {base_prompt}"
+    )
+
+    raw = await run_local_chat(
+        username,
+        instruction,
+        analysis={"task": "image_prompt"},
+    )
+
+    if not raw:
+        # Her ihtimale karşı fallback
+        return base_prompt
+
+    lower = raw.lower()
+    idx = lower.find("prompt:")
+    if idx == -1:
+        # Model formatı bozarsa, gelen cevabı direkt kullan
+        return raw.strip()
+
+    result = raw[idx + len("prompt:"):].strip()
+
+    # Çevresindeki tırnak / backtick'leri temizle
+    if (result.startswith('"') and result.endswith('"')) or (
+        result.startswith("'") and result.endswith("'")
+    ):
+        result = result[1:-1].strip()
+    if result.startswith("`") and result.endswith("`"):
+        result = result[1:-1].strip()
+
+    return result or base_prompt
+
+
+async def _maybe_handle_image_locally(username: str, message: str) -> Optional[str]:
+    """
+    Sadece Bela (force_local) veya LOCAL_CHAT aksiyonlarında,
+    Groq'a gitmeden image isteğini yakalayıp,
+    prompt'u Bela ile detaylandırıp İngilizceye çevirir ve resmi üretir.
+    """
+    try:
+        decision = run_decider_stub(message)
+    except Exception as e:
+        logger.error(f"[LOCAL_IMAGE] run_decider_stub hata: {e}")
+        decision = {}
+
+    if decision.get("action") != "IMAGE":
+        return None
+
+    image_info = decision.get("image") or {}
+    base_prompt = image_info.get("prompt") or message
+
+    detailed_prompt = await _build_image_prompt_with_bela(username, base_prompt)
+
+    logger.info(f"[LOCAL_IMAGE] user={username} prompt={detailed_prompt!r}")
+
+    reply = generate_image_sync(username, detailed_prompt)
+    return reply
+
+
+async def process_chat_message(
+    username: str,
+    message: str,
+    force_local: bool = False,
+    conversation_id: Optional[str] = None,
+) -> str:
+    user = get_user_by_username(username)
+
+     # 1) "Sadece Bela" modu → DECIDER bypass
+    if force_local:
+        if not user:
+            return "Kullanıcı bilgisine ulaşılamadı, tekrar giriş yapmayı dene."
+
+        if not getattr(user, "can_use_local_chat", False):
+            return (
+                "Bu hesap için yerel/sansürsüz model devreye alınmamış. "
+                "Admin panelinden yetki verilmesi gerekiyor."
+            )
+
+        if getattr(user, "censorship_level", 1) != 0:
+            return (
+                "Hesabın sansürsüz (0) modda olmadığı için 'sadece Bela' modunu "
+                "kullanamazsın."
+            )
+
+        # 1.a) Önce bu mesaj bir resim isteği mi, onu kontrol et
+        image_reply = await _maybe_handle_image_locally(username, message)
+        if image_reply is not None:
+            return image_reply
+
+        # 1.b) Değilse normal Bela metin cevabı
+        logger.info("[FORCE_LOCAL] Kullanıcı sadece Bela modunu aktif etmiş, DECIDER bypass.")
+        analysis = {"forced_mode": "LOCAL_ONLY"}
+        local_reply = await run_local_chat(username, message, analysis=analysis)
+        return "[BELA] " + local_reply
+
+
+    # 2) Normal mod: DECIDER ile devam
+    decision = run_decider(message)
+    action = decision.get("action")
+    analysis = decision.get("analysis", {})
+
+    logger.info(f"[DECIDER] user={username} action={action} analysis={analysis}")
+
+    # ----------------------------------------------------
+    # GROQ_REPLY → Groq + bağlam (geçmiş + hafıza + RAG)
+    # ----------------------------------------------------
+    if action == "GROQ_REPLY":
+        context_blocks = []
+
+        # a) Sohbet geçmişi (conversation_id geldiyse)
+        if conversation_id:
+            try:
+                conv_ctx = get_recent_context(username, conversation_id)
+            except Exception as e:
+                logger.error("get_recent_context hata: %s", e)
+                conv_ctx = ""
+            if conv_ctx:
+                context_blocks.append("### SOHBET GEÇMİŞİ ###\n" + conv_ctx)
+
+        # b) Kişisel hafıza
+        try:
+            mem_items = search_memories(username, message)
+        except Exception as e:
+            logger.error("search_memories hata: %s", e)
+            mem_items = []
+        if mem_items:
+            mem_text = "\n".join(f"- {m.text}" for m in mem_items)
+            context_blocks.append("### KULLANICI HAFIZASI ###\n" + mem_text)
+
+        # c) RAG (user + global + conversation)
+        try:
+            rag_docs = search_documents(
+                message,
+                owner=username,
+                scopes=["user", "global", "conversation"],
+            )
+        except Exception as e:
+            logger.error("search_documents hata: %s", e)
+            rag_docs = []
+        if rag_docs:
+            rag_text = "\n".join(f"- {d.text}" for d in rag_docs)
+            context_blocks.append("### RAG BELGELERİ ###\n" + rag_text)
+
+        context_text = "\n\n".join(context_blocks) if context_blocks else None
+
+        # Groq cevabını al
+        groq_answer = await generate_answer(
+            message,
+            analysis=analysis,
+            context=context_text,
+        )
+
+        logger.info(f"[GROQ_REPLY] Groq cevabı (ilk 200): {groq_answer[:200]!r}")
+
+        # Groq güvenlik/etik nedeniyle kaçındıysa → Bela fallback
+        user = get_user_by_username(username)
+        can_local = bool(user and getattr(user, "can_use_local_chat", False))
+        level = getattr(user, "censorship_level", 0) if user else 0
+
+        from router.groq_answerer import groq_failed_safety
+
+        if groq_failed_safety(groq_answer) and can_local and level <= 1:
+            logger.info("[FAILOVER] Groq cevabı güvenlik/etik reddi gibi görünüyor, Bela'ya aktarıyoruz.")
+            local_reply = await run_local_chat(username, message, analysis=analysis)
+            return "[BELA] " + local_reply
+        # ------------------------------------------------
+        # Otomatik kişisel hafıza kaydı (Groq kararı ile)
+        # ------------------------------------------------
+        try:
+            mem_decision = await decide_memory_storage(message, groq_answer)
+            if mem_decision.get("store"):
+                mem_text = (
+                    mem_decision.get("memory")
+                    or mem_decision.get("text")
+                    or ""
+                )
+                mem_text = mem_text.strip()
+                if mem_text:
+                    importance = float(mem_decision.get("importance", 0.5))
+                    add_memory(
+                        username,
+                        mem_text,
+                        importance=importance,
+                        tags=["auto"],
+                    )
+                    logger.info("[MEMORY] Otomatik hafıza kaydedildi: %s", mem_text)
+        except Exception as e:
+            logger.error("Otomatik memory kaydı sırasında hata: %s", e)
+                # -----------------------------------------------
+        # UZUN SOHBET ÖZETİ → RAG (conversation scope)
+        # -----------------------------------------------
+        try:
+            # 1. Sohbet mesajlarını al
+            msgs = get_recent_context(username, conversation_id, max_messages=999, max_chars=20000)
+
+            # 2. Eğer sohbet 4000+ karaktere ulaşmışsa özetlenebilir
+            if msgs and len(msgs) > 4000:
+                summary = await summarize_conversation_for_rag(msgs)
+                if summary:
+                    add_document(
+                        text=summary,
+                        scope="conversation",
+                        owner=username,
+                        metadata={"conv_id": conversation_id},
+                    )
+                    logger.info("[RAG] Uzun sohbet özeti RAG'e eklendi.")
+        except Exception as e:
+            logger.error(f"Sohbet özeti oluşturulamadı: {e}")
+
+        return "[GROQ] " + groq_answer
+
+    # ----------------------------------------------------
+    # IMAGE → Flux / Forge ile görsel üret
+    # ----------------------------------------------------
+    if action == "IMAGE":
+        image_info = decision.get("image", {})
+        prompt = image_info.get("prompt") or message  # fallback: karar verici bozulursa
+
+        logger.info(f"[IMAGE] user={username} prompt={prompt!r}")
+
+        reply = generate_image_sync(username, prompt)
+        
+        # --- YENİ EKLENEN KISIM: Prompt'u cevaba ekle ---
+        # reply şuna benziyor: "[IMAGE] ... IMAGE_PATH: /images/x.png"
+        # Sonuna PROMPT ekliyoruz.
+        return f"{reply} PROMPT: {prompt}"
+
+
+    # ----------------------------------------------------
+    # INTERNET → Web araması + Groq ANSWERER (zaten context kullanıyor)
+    # ----------------------------------------------------
+    if action == "INTERNET":
+        text = await handle_internet_action(decision, username, message)
+        return "[NET] " + text
+
+    # ----------------------------------------------------
+    # LOCAL_CHAT → Kullanıcı tercihiyle doğrudan Bela
+    # ----------------------------------------------------
+    if action == "LOCAL_CHAT":
+    # 🔹 Önce resim isteği mi, onu kontrol et
+        image_reply = await _maybe_handle_image_locally(username, message)
+        if image_reply is not None:
+            return image_reply
+
+        user = get_user_by_username(username)
+        if not user:
+            logger.warning(f"LOCAL_CHAT: user objesi bulunamadı: {username}")
+            return "Seni tanıyamadım gibi, lütfen tekrar giriş yapmayı dene."
+
+        if not user.can_use_local_chat:
+            return (
+                "Bu hesap için şu anda yerel/sansürsüz modu kullanamıyorsun. "
+                "Eğer açılmasını istiyorsan yöneticiden rica edebilirsin."
+            )
+
+        if user.censorship_level >= 2:
+            return (
+                "Hesabın için ayarlanan sansür seviyesi nedeniyle yerel/sansürsüz modu kullanamıyorsun. "
+                "Bu, senin güvenliğin için böyle ayarlanmış olabilir."
+            )
+
+        local_reply = await run_local_chat(username, message, analysis=analysis)
+        return "[BELA] " + local_reply
+
+
+    return "Hazırlık aşamasındayız, aksiyon türünü tanıyamadım ama sistem çalışıyor 🙂"

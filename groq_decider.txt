@@ -1,0 +1,467 @@
+"""
+Groq DECIDER katmanı.
+
+- Eğer GROQ_API_KEY yoksa -> STUB modunda çalışır.
+- Eğer key varsa -> Groq API'ye istek atar, JSON DECISION döndürür.
+  Hata olursa yine STUB'a geri düşer.
+
+Şu an sadece DECIDER kısmını yapıyoruz.
+ANSWERER (cevap yazan Groq isteği) ileride eklenecek.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any, Dict, Optional
+
+from core.config import get_settings
+from core.logger import get_logger
+
+settings = get_settings()
+logger = get_logger(__name__)
+
+try:
+    from groq import Groq  # type: ignore
+except ImportError:
+    Groq = None  # kütüphane yoksa da stub çalışmaya devam eder
+
+# --- STUB DECIDER (önceki mantığımız) --------------------------------------
+
+
+def run_decider_stub(message: str) -> Dict[str, Any]:
+    """
+    Groq yoksa / key yoksa kullanılacak basit DECIDER.
+    """
+
+    text = message.strip().lower()
+
+    analysis = {
+        "intent": "chat",
+        "needs_internet": False,
+        "needs_image": False,
+        "needs_local_chat": False,
+        "complexity": "low",
+        "tone": "neutral",
+        "original_message": message,
+    }
+
+    # 1) Resim isteği gibi görünenler
+        # 1) Resim isteği gibi görünenler
+
+    # 1.a) Eski format: "resim: ..." veya "çiz: ..."
+    if text.startswith("resim:") or text.startswith("çiz:"):
+        analysis["intent"] = "image_request"
+        analysis["needs_image"] = True
+        action = "IMAGE"
+        image_prompt = message.split(":", 1)[1].strip() if ":" in message else message
+        return {
+            "analysis": analysis,
+            "action": action,
+            "image": {
+                "prompt": image_prompt,
+            },
+        }
+
+    # 1.b) Daha doğal Türkçe formatlar: "bana ... resmi çiz", "güzel bir manzara resmi çiz", "bir logo çiz" vs.
+    # Bazı kelime gruplarını kontrol edeceğiz.
+    image_nouns = ["resim", "resmi", "resmini", "resimler", "görsel", "fotoğraf", "logo", "ikon", "poster"]
+    image_verbs = [
+        "çiz", "çizer misin", "çizebilir misin",
+        "yap", "yapar mısın", "tasarla", "tasarlar mısın",
+        "oluştur", "oluşturur musun", "render", "üret", "üretir misin",
+    ]
+    tutorial_words = ["nasıl", "öğret", "anlat", "açıkla", "tutorial", "ders"]
+
+    has_image_noun = any(word in text for word in image_nouns)
+    has_image_verb = any(word in text for word in image_verbs)
+    is_tutorial_like = any(word in text for word in tutorial_words)
+
+    # Örnek tetikleyiciler:
+    # - "bana araç resmi çiz"
+    # - "güzel bir manzara resmi çiz"
+    # - "şöyle minimal bir logo tasarla"
+    if (has_image_noun or "çiz" in text) and has_image_verb and not is_tutorial_like:
+        analysis["intent"] = "image_request"
+        analysis["needs_image"] = True
+        action = "IMAGE"
+
+        # Bu durumda tüm cümleyi base prompt olarak kullanıyoruz;
+        # Bela zaten bunu İngilizce ve detaylı hale getiriyor.
+        image_prompt = message.strip()
+
+        return {
+            "analysis": analysis,
+            "action": action,
+            "image": {
+                "prompt": image_prompt,
+            },
+        }
+
+
+    # 2) Güncel bilgi isteyenler (internet)
+    internet_keywords = ["güncel", "bugün", "şu an", "şuan", "dolar", "hava durumu", "hava nasıl", "son dakika"]
+    if any(kw in text for kw in internet_keywords):
+        analysis["intent"] = "internet_question"
+        analysis["needs_internet"] = True
+        analysis["complexity"] = "medium"
+        action = "INTERNET"
+        return {
+            "analysis": analysis,
+            "action": action,
+            "internet": {
+                "queries": [
+                    {
+                        "id": "q1",
+                        "query": message,
+                    }
+                ]
+            },
+        }
+
+    # 3) Sansürsüz konuşma isteği (LOCAL_CHAT / Bela)
+    local_keywords = ["sansürsüz", "bela", "lokal model", "yerel model"]
+    if any(kw in text for kw in local_keywords):
+        analysis["intent"] = "local_chat_request"
+        analysis["needs_local_chat"] = True
+        analysis["complexity"] = "medium"
+        action = "LOCAL_CHAT"
+        return {
+            "analysis": analysis,
+            "action": action,
+        }
+
+    # 4) Default: normal sohbet (GROQ_REPLY)
+    action = "GROQ_REPLY"
+    return {
+        "analysis": analysis,
+        "action": action,
+        "reply": f"(STUB) Normal sohbet gibi görünüyor, şimdilik sadece mesajını geri okuyorum: {message}",
+    }
+
+
+# --- GERÇEK DECIDER --------------------------------------------------------
+
+
+_groq_client: Optional["Groq"] = None
+
+
+def get_groq_client() -> Optional["Groq"]:
+    """
+    Hem DECIDER hem de ANSWERER tarafından kullanılacak ortak Groq istemcisi.
+    """
+    global _groq_client
+
+    if _groq_client is not None:
+        return _groq_client
+
+    if not settings.GROQ_API_KEY:
+        logger.warning("GROQ_API_KEY ayarlı değil, Groq istemcisi oluşturulamadı.")
+        return None
+
+    if Groq is None:
+        logger.warning("groq kütüphanesi import edilemedi, Groq istemcisi oluşturulamadı.")
+        return None
+
+    try:
+        _groq_client = Groq(api_key=settings.GROQ_API_KEY)
+        logger.info("Groq istemcisi oluşturuldu.")
+        return _groq_client
+    except Exception as e:
+        logger.error(f"Groq istemcisi oluşturulurken hata: {e}")
+        return None
+
+
+
+DECIDER_SYSTEM_PROMPT = """
+You are a DECIDER assistant.
+Your job:
+- Analyze the user message.
+- Return a JSON object with the following shape:
+
+{
+  "analysis": {
+    "intent": "chat | image_request | internet_question | local_chat_request | other",
+    "needs_internet": false,
+    "needs_image": false,
+    "needs_local_chat": false,
+    "complexity": "low | medium | high",
+    "tone": "neutral | angry | sad | happy | excited",
+    "original_message": "..."
+  },
+  "action": "GROQ_REPLY | INTERNET | IMAGE | LOCAL_CHAT",
+  "image": {
+    "prompt": "..."         // only if action = IMAGE
+  },
+  "internet": {
+    "queries": [
+      { "id": "q1", "query": "..." }
+    ]
+  },
+  "reply": "..."              // only if action = GROQ_REPLY
+}
+
+Rules:
+- Output MUST be valid JSON. No comments.
+- "action" MUST be one of: GROQ_REPLY, INTERNET, IMAGE, LOCAL_CHAT.
+
+*** CRITICAL RULES FOR IMAGE GENERATION (action = IMAGE) ***
+1. If the user wants an image, set "action": "IMAGE".
+2. "image.prompt" MUST be in ENGLISH.
+3. BE AN ART DIRECTOR: Analyze the subject and choose the BEST style/lighting for THAT specific subject.
+   - Do NOT apply the same style (like "neon" or "cinematic") to everything.
+   - EXAMPLES:
+     * User: "Siyah spor araba" -> Your Prompt: "A sleek black sports car, cinematic lighting, reflections, urban night, 8k, photorealistic."
+     * User: "Yaşlı bir amca portresi" -> Your Prompt: "Portrait of an elderly man, natural window light, highly detailed wrinkles, soft bokeh, emotional, 85mm lens photography." (No neon, no sci-fi!)
+     * User: "Güneşli bir sahil" -> Your Prompt: "A beautiful sunny beach, turquoise water, white sand, vibrant colors, wide angle shot, relaxing atmosphere."
+4. Translate Turkish requests to English and enhance them artistically based on the context.
+
+- If the user asks for real-time info -> action = INTERNET.
+- If the user asks for uncensored/local chat -> action = LOCAL_CHAT.
+- Otherwise -> action = GROQ_REPLY.
+"""
+
+
+
+def run_decider(message: str) -> Dict[str, Any]:
+    """
+    Dışarıdan sadece bunu kullanacağız.
+
+    1) Groq client ve API key mevcutsa:
+       - Gerçek DECIDER çalıştır, JSON parse et.
+       - Hata olursa logla ve STUB'a düş.
+    2) Değilse:
+       - Direkt STUB DECIDER.
+    """
+    client = get_groq_client()
+    if client is None:
+        return run_decider_stub(message)
+
+    try:
+        chat_completion = client.chat.completions.create(
+            model=settings.GROQ_DECIDER_MODEL,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": DECIDER_SYSTEM_PROMPT},
+                {"role": "user", "content": message},
+            ],
+        )
+
+        content = chat_completion.choices[0].message.content
+        decision = json.loads(content)
+        # Temel kontrol
+        if "action" not in decision:
+            raise ValueError("DECIDER JSON içinde 'action' alanı yok.")
+        return decision
+
+    except Exception as e:
+        logger.error(f"Groq DECIDER çağrısında hata, STUB'a dönüyoruz: {e}")
+        return run_decider_stub(message)
+async def decide_memory_storage(message: str, answer: str) -> Dict[str, Any]:
+    """
+    Kullanıcı mesajı + Groq cevabına bakarak, uzun vadeli hafızaya kaydedilecek
+    bir bilgi olup olmadığına karar verir.
+    Groq_API yoksa veya hata olursa {"store": False} döner.
+    """
+    client = get_groq_client()
+    if client is None:
+        # Groq yoksa memory otomatik kaydı devre dışı
+        return {"store": False}
+
+    # Kullanıcı + cevap içeriğini tek text'te birleştirelim
+    user_content = (
+        "Kullanıcı mesajı:\n"
+        + message
+        + "\n\nAsistan cevabı:\n"
+        + answer
+    )
+
+    try:
+        chat_completion = client.chat.completions.create(
+            model=settings.GROQ_DECIDER_MODEL,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": MEMORY_DECIDER_SYSTEM_PROMPT},
+                {"role": "user", "content": user_content},
+            ],
+        )
+
+        content = chat_completion.choices[0].message.content
+        data = json.loads(content)
+        if not isinstance(data, dict):
+            raise ValueError("Memory DECIDER JSON değil.")
+        if "store" not in data:
+            data["store"] = False
+        return data
+
+    except Exception as e:
+        logger.error(f"Memory DECIDER çağrısında hata: {e}")
+        return {"store": False}
+MEMORY_DECIDER_SYSTEM_PROMPT = """
+Sen bir HAFIZA YÖNETİCİSİN.
+
+Görevin:
+- Kullanıcı mesajı ve asistan cevabını incelemek
+- Kullanıcı hakkında uzun vadeli saklanması faydalı olacak BİLGİ var mı karar vermek
+
+Sadece aşağıdaki durumları kaydet:
+- Kullanıcının kim olduğu, işi, uzmanlığı, ilgi alanları
+- Uzun vadeli hedefleri (örneğin "3 ay içinde İngilizce öğrenmek istiyorum")
+- Kalıcı tercihleri (örneğin "Cevapları kısa seviyorum", "Karanlık temayı seviyorum")
+- Sürekli tekrarlanabilecek alışkanlıklar (örneğin "Genelde Python kullanıyorum")
+
+Kesinlikle kaydetme:
+- Geçici şeyler (bugünkü hava durumu, o anki saat, maç skorları)
+- Çok genel bilgiler (tarihsel bilgi, ansiklopedik bilgi)
+- Tek seferlik komutlar
+- Kişiyi doğrudan tehlikeye atabilecek hassas bilgiler
+
+HER ZAMAN şu JSON formatında cevap ver:
+{
+  "store": true veya false,
+  "memory": "Kaydedilecek tek cümlelik bilgi",
+  "importance": 0.0 ile 1.0 arasında bir sayı
+}
+"""
+
+RAG_DECIDER_SYSTEM_PROMPT = """
+Sen bir BİLGİ ÖZETLEYİCİSİN.
+
+Görevin:
+- Kullanıcının sorusuna internetten gelen cevabı incelemek
+- Bu cevabın gelecekte tekrar kullanılmaya değer GENEL BİLGİ içerip içermediğine karar vermek
+
+Sadece aşağıdaki durumlarda kaydet:
+- Zamandan bağımsız, genel geçer bilgiler (tarih, kavramlar, nasıl yapılır rehberleri vb.)
+- Derli toplu açıklamalar, özetler
+- Bir kavramı iyi açıklayan metinler
+
+Kesinlikle kaydetme:
+- Hava durumu, anlık haberler, maç skorları gibi geçici bilgiler
+- Sadece link listesi veya çok yüzeysel cevaplar
+- Kullanıcının kişisel verilerini içeren metinler
+
+HER ZAMAN şu JSON formatında cevap ver:
+{
+  "store": true veya false,
+  "summary": "Kaydedilecek kısa özet metin"
+}
+"""
+
+async def decide_memory_storage(message: str, answer: str) -> Dict[str, Any]:
+    """
+    Kullanıcı mesajı + Groq cevabına bakarak, uzun vadeli hafızaya kaydedilecek
+    bir bilgi olup olmadığına karar verir.
+    Groq API yoksa veya hata olursa {"store": False} döner.
+    """
+    client = get_groq_client()
+    if client is None:
+        return {"store": False}
+
+    user_content = (
+        "Kullanıcı mesajı:\n"
+        + message
+        + "\n\nAsistan cevabı:\n"
+        + answer
+    )
+
+    try:
+        chat_completion = client.chat.completions.create(
+            model=settings.GROQ_DECIDER_MODEL,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": MEMORY_DECIDER_SYSTEM_PROMPT},
+                {"role": "user", "content": user_content},
+            ],
+        )
+        content = chat_completion.choices[0].message.content
+        data = json.loads(content)
+        if not isinstance(data, dict):
+            raise ValueError("Memory DECIDER JSON değil.")
+        if "store" not in data:
+            data["store"] = False
+        return data
+    except Exception as e:
+        logger.error(f"Memory DECIDER çağrısında hata: {e}")
+        return {"store": False}
+
+
+async def decide_rag_storage(question: str, answer: str) -> Dict[str, Any]:
+    """
+    İnternet üzerinden gelen cevabın RAG deposuna kaydedilip kaydedilmeyeceğine
+    Groq ile karar verir. Groq yoksa veya hata olursa {"store": False} döner.
+    """
+    client = get_groq_client()
+    if client is None:
+        return {"store": False}
+
+    user_content = (
+        "Kullanıcının sorusu:\n"
+        + question
+        + "\n\nİnternetten gelen cevap:\n"
+        + answer
+    )
+
+    try:
+        chat_completion = client.chat.completions.create(
+            model=settings.GROQ_DECIDER_MODEL,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": RAG_DECIDER_SYSTEM_PROMPT},
+                {"role": "user", "content": user_content},
+            ],
+        )
+        content = chat_completion.choices[0].message.content
+        data = json.loads(content)
+        if not isinstance(data, dict):
+            raise ValueError("RAG DECIDER JSON değil.")
+        if "store" not in data:
+            data["store"] = False
+        return data
+    except Exception as e:
+        logger.error(f"RAG DECIDER çağrısında hata: {e}")
+        return {"store": False}
+CONVERSATION_SUMMARY_SYSTEM = """
+Sen bir SOHBET ÖZETLEYİCİSİN.
+
+Görevin:
+- Kullanıcı ile yapılan bir sohbetin son bölümünü incelemek
+- Bu sohbetin ana noktalarını 3–6 cümlelik kısa bir PARAGRAF şeklinde özetlemek
+
+Özetin içinde olmalı:
+- Sohbetin genel konusu
+- Önemli bilgiler / çıkarımlar
+- Kullanıcıyla ilgili unutulmaması gereken noktalar
+
+Olmamalı:
+- Gereksiz detaylar
+- Tarih, saat, anlık örnekler
+- Gereksiz uzatmalar
+
+ÇIKTI FORMAT:
+{
+  "summary": "metin..."
+}
+"""
+
+async def summarize_conversation_for_rag(text: str) -> str:
+    """
+    Groq'tan kısa bir sohbet özeti üretir. Hata olursa boş string döner.
+    """
+    client = get_groq_client()
+    if client is None:
+        return ""
+
+    try:
+        comp = client.chat.completions.create(
+            model=settings.GROQ_DECIDER_MODEL,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": CONVERSATION_SUMMARY_SYSTEM},
+                {"role": "user", "content": text},
+            ],
+        )
+        js = json.loads(comp.choices[0].message.content)
+        return js.get("summary", "")
+    except Exception as e:
+        logger.error(f"Sohbet özeti üretilemedi: {e}")
+        return ""

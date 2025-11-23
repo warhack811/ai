@@ -1,0 +1,75 @@
+# main app placeholder
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+
+from core.config import get_settings
+from core.logger import get_logger
+
+from starlette.middleware.sessions import SessionMiddleware
+from auth.invite_manager import ensure_initial_invite
+from api import public_routes, user_routes, admin_routes
+
+
+
+settings = get_settings()
+logger = get_logger(__name__)
+
+app = FastAPI(
+    title=settings.APP_NAME,
+    debug=settings.DEBUG,
+)
+app.add_middleware(SessionMiddleware, secret_key=settings.SECRET_KEY)
+# UI klasörünü /ui altında statik olarak sun
+BASE_DIR = Path(__file__).resolve().parent
+UI_DIR = BASE_DIR / "ui"
+app.mount("/ui", StaticFiles(directory=str(UI_DIR)), name="ui")
+
+# 🔹 Üretilen resimleri /images altında servis et
+IMAGES_DIR = BASE_DIR / "data" / "images"
+IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/images", StaticFiles(directory=str(IMAGES_DIR)), name="images")
+
+
+
+@app.on_event("startup")
+async def on_startup():
+    logger.info("Mami AI backend starting up")
+    invite = ensure_initial_invite()
+    logger.info(f"Test için geçerli davet kodu: {invite.code}")
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    logger.info("Mami AI backend shutting down")
+
+
+@app.get("/health")
+async def health():
+    """
+    Sağlık kontrolü.
+    Monitoring vb. için kullanılacak.
+    """
+    return {"status": "ok"}
+
+
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    """
+    Ana sayfa şimdilik login ekranını gösteriyor.
+    İleride auth durumuna göre yönlendirme yapabiliriz.
+    """
+    login_html_path = UI_DIR / "login.html"
+    if login_html_path.exists():
+        return login_html_path.read_text(encoding="utf-8")
+    return "<h1>Mami AI</h1><p>login.html bulunamadı.</p>"
+
+
+# Public route'ları bağla
+app.include_router(public_routes.router, prefix="/api/public")
+app.include_router(user_routes.router, prefix="/api/user")
+
+# 🔹 Admin paneli router'ı
+app.include_router(admin_routes.router, prefix="/api/admin")
+

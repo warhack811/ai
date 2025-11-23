@@ -1,0 +1,50 @@
+from functools import lru_cache
+from pydantic import BaseSettings
+
+
+class Settings(BaseSettings):
+    # Genel uygulama ayarları
+    APP_NAME: str = "Mami AI"
+    DEBUG: bool = True
+
+    API_HOST: str = "0.0.0.0"
+    API_PORT: int = 8000
+
+    # Oturum / imzalama için gizli anahtar
+    SECRET_KEY: str = "super-secret-dev-key-change-this"
+
+    # Groq ayarları
+    GROQ_API_KEY: str = ""  # .env içine eklediğinde gerçek DECIDER açılacak
+    GROQ_DECIDER_MODEL: str = "llama-3.3-70b-versatile"
+
+    # INTERNET providers
+    BING_API_KEY: str = ""  # Azure Bing Search key
+    BING_ENDPOINT: str = "https://api.bing.microsoft.com/v7.0/search"
+    
+    # Serper (Google Search) ayarları
+    SERPER_API_KEY: str = ""
+    SERPER_ENDPOINT: str = "https://google.serper.dev/search"
+    
+    # Ollama / Gemma (Bela) ayarları
+    OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
+    OLLAMA_GEMMA_MODEL: str = "gemma"
+    
+     # 🔹 Forge / Flux ayarları
+    # webui-user.bat ile açtığın arayüz genelde http://127.0.0.1:7860 olur
+    FORGE_BASE_URL: str = "http://127.0.0.1:7860"
+    # Stable Diffusion WebUI Forge txt2img endpoint'i (A1111 ile aynı)
+    FORGE_TXT2IMG_PATH: str = "/sdapi/v1/txt2img"
+    # İstek zaman aşımı (saniye)
+    FORGE_TIMEOUT: int = 180
+    # Kullanmak istediğin Flux checkpoint adı (UI'de seçtiğin isimle eşleşebilir)
+    # Boş bırakırsan override_settings gönderilmez, Forge'ta seçili olan model kullanılır.
+    FORGE_FLUX_CHECKPOINT: str = "flux1-dev-bnb-nf4-v2.safetensors"
+
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+
+
+@lru_cache()
+def get_settings() -> Settings:
+    return Settings()

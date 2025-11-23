@@ -1,0 +1,292 @@
+from fastapi import APIRouter, Request, HTTPException, UploadFile, File, Form
+
+from pydantic import BaseModel, Field
+
+from auth.session import get_username_from_request
+from core.logger import get_logger
+from router.chat_router import process_chat_message
+from auth.user_manager import get_user_by_username
+from typing import Optional, List
+from core.rag_store import add_document  # 🔹 BUNU EKLE
+from pathlib import Path                  # 🔹 BUNU EKLE
+from core.conversation_store import (
+    list_conversations as conv_list,
+    load_messages as conv_load_messages,
+    create_conversation as conv_create,
+    append_message as conv_append,
+    delete_conversation as conv_delete, 
+)
+
+logger = get_logger(__name__)
+router = APIRouter(tags=["user"])
+
+logger = get_logger(__name__)
+
+UPLOAD_ROOT = Path("data") / "uploads"
+UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+def chunk_text(text: str, chunk_size: int = 1200, overlap: int = 200):
+    """
+    Metni parçalar halinde böler. RAG için kullanılacak.
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+
+    chunks = []
+    start = 0
+    length = len(text)
+    while start < length:
+        end = start + chunk_size
+        chunk = text[start:end]
+        chunks.append(chunk.strip())
+        if end >= length:
+            break
+        start = end - overlap  # biraz bindirme
+    return [c for c in chunks if c]
+
+
+def extract_text_from_pdf(file_path: Path) -> str:
+    """
+    Basit PDF metin çıkarma. PyPDF2 kullanır.
+    Gerekli: pip install PyPDF2
+    """
+    import PyPDF2  # requirements.txt'ye PyPDF2 eklemeyi unutma
+
+    text_parts = []
+    with file_path.open("rb") as f:
+        reader = PyPDF2.PdfReader(f)
+        for page in reader.pages:
+            t = page.extract_text() or ""
+            if t.strip():
+                text_parts.append(t)
+    return "\n".join(text_parts)
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=10000)
+    force_local: bool = False  # "Sadece Bela" butonu
+    conversation_id: Optional[str] = None  # mevcut sohbetin ID'si (yoksa yeni sohbet açılır)
+
+
+class ConversationSummaryOut(BaseModel):
+    id: str
+    title: str
+    created_at: str
+    updated_at: str
+
+
+class MessageOut(BaseModel):
+    role: str
+    text: str
+    time: str
+
+
+@router.post("/chat")
+async def chat(request: Request, payload: ChatRequest):
+    username = get_username_from_request(request)
+    if not username:
+        raise HTTPException(
+            status_code=401,
+            detail="Oturum açman gerekiyor. Lütfen giriş yap.",
+        )
+
+    user = get_user_by_username(username)
+    if user and getattr(user, "is_banned", False):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Hesabın admin tarafından geçici olarak kilitlenmiş durumda. "
+                "Lütfen daha sonra tekrar dene veya yönetici ile iletişime geç."
+            ),
+        )
+
+    logger.info(f"[CHAT] {username}: {payload.message}")
+
+    conv_id = payload.conversation_id
+
+    # Eğer mevcut sohbet yoksa, ilk mesajla birlikte yeni sohbet oluştur
+    if not conv_id:
+        summary = conv_create(username=username, first_message=payload.message)
+        conv_id = summary.id
+
+    # Kullanıcı mesajını geçmişe ekle
+    conv_append(username=username, conv_id=conv_id, role="user", text=payload.message)
+
+    # Asıl cevabı üret
+    reply = await process_chat_message(
+        username=username,
+        message=payload.message,
+        force_local=payload.force_local,
+        conversation_id=conv_id,  # 🔴 EKSİK OLAN KISIM BUYDU
+    )
+
+    # Bot cevabını da geçmişe ekle
+    conv_append(username=username, conv_id=conv_id, role="bot", text=reply)
+
+    # Frontend'e hem cevap hem de conversation_id dön
+    return {"reply": reply, "conversation_id": conv_id}
+
+
+@router.get("/conversations", response_model=List[ConversationSummaryOut])
+async def get_conversations(request: Request):
+    """
+    Kullanıcının tüm sohbet özetlerini döner.
+    """
+    username = get_username_from_request(request)
+    if not username:
+        raise HTTPException(
+            status_code=401,
+            detail="Oturum açman gerekiyor. Lütfen giriş yap.",
+        )
+
+    convs = conv_list(username=username)
+    return [
+        ConversationSummaryOut(
+            id=c.id,
+            title=c.title,
+            created_at=c.created_at,
+            updated_at=c.updated_at,
+        )
+        for c in convs
+    ]
+
+
+@router.get("/conversations/{conversation_id}", response_model=List[MessageOut])
+async def get_conversation_messages(conversation_id: str, request: Request):
+    """
+    Belirli bir sohbete ait tüm mesajları döner.
+    """
+    username = get_username_from_request(request)
+    if not username:
+        raise HTTPException(
+            status_code=401,
+            detail="Oturum açman gerekiyor. Lütfen giriş yap.",
+        )
+
+    msgs = conv_load_messages(username=username, conv_id=conversation_id)
+    return [
+        MessageOut(
+            role=m.role,
+            text=m.text,
+            time=m.time,
+        )
+        for m in msgs
+    ]
+
+@router.delete("/conversations/{conversation_id}")
+async def delete_conversation_endpoint(conversation_id: str, request: Request):
+    """
+    Bir sohbeti tamamen siler (index + mesaj dosyası).
+    """
+    username = get_username_from_request(request)
+    if not username:
+        raise HTTPException(
+            status_code=401,
+            detail="Oturum açman gerekiyor. Lütfen giriş yap.",
+        )
+
+    conv_delete(username=username, conv_id=conversation_id)
+    return {"ok": True}
+
+@router.post("/upload")
+async def upload_document(
+    request: Request,
+    file: UploadFile = File(...),
+    conversation_id: Optional[str] = Form(None),
+):
+    """
+    PDF veya TXT dosyası yükler, metnini çıkarır ve RAG deposuna (scope='user')
+    parça parça kaydeder.
+    """
+    username = get_username_from_request(request)
+    if not username:
+        raise HTTPException(
+            status_code=401,
+            detail="Oturum açman gerekiyor. Lütfen giriş yap.",
+        )
+
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Dosya adı bulunamadı.")
+
+    filename = file.filename
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in ("pdf", "txt"):
+        raise HTTPException(
+            status_code=400,
+            detail="Şu anda sadece PDF ve TXT dosyaları destekleniyor.",
+        )
+
+    # Dosyayı data/uploads/<username>/ altına kaydet
+    user_dir = UPLOAD_ROOT / username
+    user_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name = filename.replace("/", "_").replace("\\", "_")
+    dest_path = user_dir / safe_name
+
+    content = await file.read()
+    with dest_path.open("wb") as out:
+        out.write(content)
+
+    # Dosyadan metin çıkar
+    if ext == "pdf":
+        try:
+            text = extract_text_from_pdf(dest_path)
+        except Exception as e:
+            logger.error("PDF okunurken hata: %s", e)
+            raise HTTPException(
+                status_code=400,
+                detail="PDF dosyası okunurken bir hata oluştu.",
+            )
+    else:  # txt
+        try:
+            text = content.decode("utf-8", errors="ignore")
+        except Exception:
+            text = content.decode("latin-1", errors="ignore")
+
+    text = (text or "").strip()
+    if not text:
+        raise HTTPException(
+            status_code=400,
+            detail="Dosyadan metin çıkarılamadı.",
+        )
+
+    # Metni parçalara böl ve RAG'e kaydet
+    chunks = chunk_text(text)
+    if not chunks:
+        raise HTTPException(
+            status_code=400,
+            detail="Dosyada kaydedilebilir metin bulunamadı.",
+        )
+
+    count = 0
+    for idx, chunk in enumerate(chunks):
+        # Dosya adını da metne ekleyelim ki "X.txt'e göre" gibi sorular yakalansın
+        text_with_filename = f"[{filename}] {chunk}"
+
+        add_document(
+            text=text_with_filename,
+            scope="user",
+            owner=username,
+            metadata={
+                "source": "upload",
+                "filename": filename,
+                "chunk_index": idx,
+                "conversation_id": conversation_id,
+            },
+        )
+        count += 1
+
+    logger.info(
+        "[UPLOAD] %s kullanıcısı %s dosyasını yükledi, %d parça RAG'e eklendi.",
+        username,
+        filename,
+        count,
+    )
+
+    return {
+        "ok": True,
+        "filename": filename,
+        "chunks": count,
+    }

@@ -1,0 +1,247 @@
+from __future__ import annotations
+
+from dataclasses import asdict
+from pathlib import Path
+from typing import List, Optional
+
+from fastapi import APIRouter, Request, HTTPException, Query
+from pydantic import BaseModel, Field
+
+from core.logger import get_logger
+from auth.session import get_username_from_request
+from auth import user_manager, invite_manager
+from image.gpu_state import get_state as get_gpu_state
+from image.image_manager import get_image_queue_stats
+logger = get_logger(__name__)
+
+router = APIRouter(tags=["admin"])
+
+@router.get("/system")
+async def admin_system(request: Request):
+    """
+    GPU durumu ve image kuyruğu istatistikleri.
+    Admin dashboard'ta gösterilecek.
+    """
+    _ = _require_admin(request)  # sadece admin erişsin
+
+    gpu_state = str(get_gpu_state().value)  # "gemma" / "flux"
+    image_stats = get_image_queue_stats()
+
+    return {
+        "ok": True,
+        "gpu_state": gpu_state,
+        "image_queue": image_stats,
+    }
+
+
+# -------------------------------------------------------------------
+# Helper: sadece admin girebilsin
+# -------------------------------------------------------------------
+def _require_admin(request: Request):
+    """
+    Oturumdaki kullanıcının admin olup olmadığını kontrol eder.
+    Admin değilse 403, oturum yoksa 401 fırlatır.
+    """
+    username = get_username_from_request(request)
+    if not username:
+        raise HTTPException(status_code=401, detail="Önce giriş yapman gerekiyor.")
+
+    user = user_manager.get_user_by_username(username)
+    if not user:
+        raise HTTPException(status_code=401, detail="Kullanıcı bulunamadı.")
+
+    if getattr(user, "role", "user") != "admin":
+        raise HTTPException(status_code=403, detail="Bu alana sadece admin girebilir.")
+
+    return user
+
+
+# -------------------------------------------------------------------
+# Schemaler
+# -------------------------------------------------------------------
+class AdminUserOut(BaseModel):
+    username: str
+    role: str
+    censorship_level: int
+    can_use_internet: bool
+    can_use_image: bool
+    can_use_local_chat: bool
+    is_banned: bool
+    daily_internet_limit: int
+    daily_image_limit: int
+
+    class Config:
+        orm_mode = True
+
+
+class AdminUserUpdate(BaseModel):
+    role: Optional[str] = Field(None, description="user / vip / admin")
+    censorship_level: Optional[int] = Field(None, ge=0, le=2)
+    can_use_internet: Optional[bool] = None
+    can_use_image: Optional[bool] = None
+    can_use_local_chat: Optional[bool] = None
+    is_banned: Optional[bool] = None
+    daily_internet_limit: Optional[int] = Field(None, ge=0, le=10000)
+    daily_image_limit: Optional[int] = Field(None, ge=0, le=10000)
+
+class AdminSummaryOut(BaseModel):
+    total_users: int
+    total_admins: int
+    total_invites: int
+    used_invites: int
+    unused_invites: int
+
+
+class AdminInviteOut(BaseModel):
+    code: str
+    created_at: str
+    created_by: str
+    used: bool
+    used_at: Optional[str] = None
+    used_by: Optional[str] = None
+
+
+class AdminCreateInvite(BaseModel):
+    note: Optional[str] = Field(
+        None,
+        description="Şimdilik sadece log için; invite JSON'una extra alan eklemiyoruz.",
+    )
+
+
+# -------------------------------------------------------------------
+# 1) Admin kim? (üst barda göstermek için)
+# -------------------------------------------------------------------
+@router.get("/me")
+async def admin_me(request: Request):
+    """
+    Admin panelini açan kullanıcıyı ve rolünü döner.
+    Hem frontend auth check için, hem de üstte isim göstermek için kullanılır.
+    """
+    admin = _require_admin(request)
+    return {"ok": True, "username": admin.username, "role": admin.role}
+
+
+# -------------------------------------------------------------------
+# 2) Kullanıcılar
+# -------------------------------------------------------------------
+@router.get("/users", response_model=List[AdminUserOut])
+async def admin_list_users(request: Request):
+    _require_admin(request)
+    users = user_manager.list_users()
+    return [
+        AdminUserOut(
+            username=u.username,
+            role=getattr(u, "role", "user"),
+            censorship_level=getattr(u, "censorship_level", 0),
+            can_use_internet=getattr(u, "can_use_internet", True),
+            can_use_image=getattr(u, "can_use_image", True),
+            can_use_local_chat=getattr(u, "can_use_local_chat", True),
+            is_banned=getattr(u, "is_banned", False),
+            daily_internet_limit=getattr(u, "daily_internet_limit", 50),
+            daily_image_limit=getattr(u, "daily_image_limit", 20),
+        )
+        for u in users
+    ]
+
+
+@router.put("/users/{username}", response_model=AdminUserOut)
+async def admin_update_user(username: str, payload: AdminUserUpdate, request: Request):
+    _require_admin(request)
+
+    updated = user_manager.update_user(
+        username,
+        role=payload.role,
+        censorship_level=payload.censorship_level,
+        can_use_internet=payload.can_use_internet,
+        can_use_image=payload.can_use_image,
+        can_use_local_chat=payload.can_use_local_chat,
+        is_banned=payload.is_banned,
+        daily_internet_limit=payload.daily_internet_limit,
+        daily_image_limit=payload.daily_image_limit,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı.")
+
+    return AdminUserOut(
+        username=updated.username,
+        role=getattr(updated, "role", "user"),
+        censorship_level=getattr(updated, "censorship_level", 0),
+        can_use_internet=getattr(updated, "can_use_internet", True),
+        can_use_image=getattr(updated, "can_use_image", True),
+        can_use_local_chat=getattr(updated, "can_use_local_chat", True),
+    )
+
+
+# -------------------------------------------------------------------
+# 3) Davet Kodları
+# -------------------------------------------------------------------
+@router.get("/invites", response_model=List[AdminInviteOut])
+async def admin_list_invites(request: Request):
+    _require_admin(request)
+    invites = invite_manager.list_invites()
+    return [AdminInviteOut(**asdict(inv)) for inv in invites]
+
+
+@router.post("/invites", response_model=AdminInviteOut)
+async def admin_create_invite(payload: AdminCreateInvite, request: Request):
+    admin = _require_admin(request)
+    inv = invite_manager.generate_invite(admin.username)
+    logger.info(f"[ADMIN] {admin.username} yeni davet kodu üretti: {inv.code}")
+    return AdminInviteOut(**asdict(inv))
+
+@router.delete("/invites/{code}")
+async def admin_delete_invite(code: str, request: Request):
+    _require_admin(request)
+    ok = invite_manager.delete_invite(code)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Davet kodu bulunamadı.")
+    return {"ok": True}
+
+# -------------------------------------------------------------------
+# 4) Özet / İstatistik
+# -------------------------------------------------------------------
+@router.get("/summary", response_model=AdminSummaryOut)
+async def admin_summary(request: Request):
+    _require_admin(request)
+    users = user_manager.list_users()
+    invites = invite_manager.list_invites()
+
+    total_users = len(users)
+    total_admins = sum(1 for u in users if getattr(u, "role", "user") == "admin")
+    total_invites = len(invites)
+    used_invites = sum(1 for i in invites if i.used)
+    unused_invites = total_invites - used_invites
+
+    return AdminSummaryOut(
+        total_users=total_users,
+        total_admins=total_admins,
+        total_invites=total_invites,
+        used_invites=used_invites,
+        unused_invites=unused_invites,
+    )
+
+
+# -------------------------------------------------------------------
+# 5) Log: son X satır
+# -------------------------------------------------------------------
+LOG_FILE = Path("logs") / "mami.log"
+
+
+@router.get("/logs/tail")
+async def admin_logs_tail(
+    request: Request,
+    lines: int = Query(200, ge=10, le=1000),
+):
+    _require_admin(request)
+
+    if not LOG_FILE.exists():
+        return {"ok": True, "lines": []}
+
+    try:
+        content = LOG_FILE.read_text(encoding="utf-8", errors="ignore").splitlines()
+        tail = content[-lines:]
+    except Exception as e:
+        logger.error(f"[ADMIN] Log okunamadı: {e}")
+        raise HTTPException(status_code=500, detail="Log okunurken hata oluştu.")
+
+    return {"ok": True, "lines": tail}

@@ -1,0 +1,54 @@
+import secrets
+from typing import Optional, Dict
+
+from fastapi import Request
+
+from core.config import get_settings
+from core.logger import get_logger
+from auth import remember as remember_mgr
+logger = get_logger(__name__)
+settings = get_settings()
+
+# basit RAM oturum tablosu
+_sessions: Dict[str, str] = {}  # session_id -> username
+
+SESSION_COOKIE_NAME = "mami_session"
+
+
+def create_session_for_user(username: str) -> str:
+    session_id = secrets.token_hex(16)
+    _sessions[session_id] = username
+    logger.info(f"Oturum açıldı: {username} -> {session_id}")
+    return session_id
+
+
+def destroy_session(session_id: str) -> None:
+    if session_id in _sessions:
+        user = _sessions.pop(session_id)
+        logger.info(f"Oturum kapatıldı: {user}")
+
+
+def get_username_from_request(request: Request) -> Optional[str]:
+    # 1) Önce RAM session'a bak
+    sid = request.cookies.get(SESSION_COOKIE_NAME)
+    if sid:
+        username = _sessions.get(sid)
+        if username:
+            return username
+
+    # 2) RAM'de yoksa "beni hatırla" token'ına bak
+    token = request.cookies.get(remember_mgr.REMEMBER_COOKIE_NAME)
+    if not token:
+        return None
+
+    username = remember_mgr.get_username_from_token(token)
+    if not username:
+        return None
+
+    # İstersen burada RAM'e de tekrar yazabilirsin (opsiyonel):
+    # new_sid = secrets.token_hex(16)
+    # _sessions[new_sid] = username
+    # (Ama cookie set etmek için burada Response yok, o yüzden sadece username döndürmek yeterli.)
+
+    return username
+

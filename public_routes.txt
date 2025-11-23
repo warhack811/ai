@@ -1,0 +1,123 @@
+from fastapi import APIRouter, Response, HTTPException, Request
+from pydantic import BaseModel, Field
+
+from core.logger import get_logger
+from auth import user_manager, invite_manager, session as session_mgr
+from auth.session import SESSION_COOKIE_NAME
+from auth import remember as remember_mgr
+logger = get_logger(__name__)
+
+router = APIRouter(tags=["public"])
+
+
+class RegisterRequest(BaseModel):
+    invite_code: str = Field(..., min_length=3)
+    username: str = Field(..., min_length=3, max_length=32)
+    password: str = Field(..., min_length=5, max_length=128)
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(..., min_length=3, max_length=32)
+    password: str = Field(..., min_length=5, max_length=128)
+    remember_me: bool = False
+
+
+@router.get("/ping")
+async def ping():
+    return {"message": "pong"}
+
+
+@router.post("/register_with_invite")
+async def register_with_invite(payload: RegisterRequest):
+    """
+    Davet kodu ile kullanıcı kaydı.
+    """
+    invite = invite_manager.find_valid_invite(payload.invite_code)
+    if not invite:
+        # Samimi ama teknik olmayan mesaj
+        raise HTTPException(
+            status_code=400,
+            detail="Bu davet kodunu tanıyamadım. Kod bozuk ya da daha önce kullanılmış olabilir.",
+        )
+
+    # Kullanıcı oluştur
+    try:
+        user_manager.create_user(username=payload.username, password=payload.password)
+    except ValueError as ve:
+        raise HTTPException(
+            status_code=400,
+            detail=str(ve),
+        )
+    except Exception as e:
+        logger.error(f"Kayıt sırasında beklenmeyen hata: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="Kayıt olurken bir şeyler ters gitti, biraz sonra tekrar deneriz.",
+        )
+
+    # Davet kodunu kullanılmış işaretle
+    invite_manager.mark_invite_used(payload.invite_code, payload.username)
+
+    return {
+        "ok": True,
+        "message": f"Hoş geldin {payload.username}! Artık giriş yapabilirsin.",
+    }
+
+
+@router.post("/login")
+async def login(payload: LoginRequest, response: Response):
+    """
+    Kullanıcı girişi. Başarılı olursa cookie'ye session id yazar.
+    """
+    if not user_manager.verify_password(payload.username, payload.password):
+        raise HTTPException(
+            status_code=401,
+            detail="Kullanıcı adı veya şifre yanlış gibi duruyor, bir daha dene 🙂",
+        )
+
+    # Session oluştur
+    session_id = session_mgr.create_session_for_user(payload.username)
+
+    # Cookie ömrü: remember_me ise 30 gün, değilse tarayıcı kapanana kadar
+    max_age = 30 * 24 * 60 * 60 if payload.remember_me else None
+
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=session_id,
+        max_age=max_age,
+        httponly=True,
+        samesite="lax",
+    )
+    # --- BURASI YENİ: "Beni hatırla" için kalıcı token ---
+    if payload.remember_me:
+        token = remember_mgr.create_remember_token(payload.username, days=30)
+        response.set_cookie(
+            key=remember_mgr.REMEMBER_COOKIE_NAME,
+            value=token,
+            max_age=30 * 24 * 60 * 60,
+            httponly=True,
+            samesite="lax",
+        )
+    return {
+        "ok": True,
+        "message": f"Tekrar hoş geldin {payload.username}!",
+    }
+
+
+@router.post("/logout")
+async def logout(request: Request, response: Response):
+    # RAM session'ı sil
+    session_id = request.cookies.get(SESSION_COOKIE_NAME)
+    if session_id:
+        session_mgr.destroy_session(session_id)
+
+    # Remember token'ı da sil
+    token = request.cookies.get(remember_mgr.REMEMBER_COOKIE_NAME)
+    if token:
+        remember_mgr.invalidate_token(token)
+        response.delete_cookie(remember_mgr.REMEMBER_COOKIE_NAME)
+
+    # Session cookie'yi temizle
+    response.delete_cookie(SESSION_COOKIE_NAME)
+
+    return {"ok": True, "message": "Çıkış yaptın, yine bekleriz."}

@@ -1,0 +1,159 @@
+# ---- code tam versiyon ----
+from __future__ import annotations
+
+import json
+import hashlib
+from dataclasses import dataclass, asdict
+from pathlib import Path
+from typing import List, Optional
+
+from core.config import get_settings
+from core.logger import get_logger
+
+
+logger = get_logger(__name__)
+settings = get_settings()
+
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(exist_ok=True)
+USERS_FILE = DATA_DIR / "users.json"
+
+
+@dataclass
+class User:
+    username: str
+    password_hash: str
+    role: str = "user"
+    censorship_level: int = 1
+    can_use_internet: bool = True
+    can_use_image: bool = True
+    can_use_local_chat: bool = False
+     # 🔹 Admin paneli için ekstra alanlar
+    is_banned: bool = False                 # true ise kullanıcı tamamen kilitli
+    daily_internet_limit: int = 50          # günde max kaç INTERNET çağrısı (şimdilik bilgi amaçlı)
+    daily_image_limit: int = 20             # günde max kaç image isteği (şimdilik bilgi amaçlı)
+
+    @staticmethod
+    def from_dict(data: dict) -> "User":
+        return User(
+            username=data["username"],
+            password_hash=data["password_hash"],
+            role=data.get("role", "user"),
+            censorship_level=data.get("censorship_level", 1),
+            can_use_internet=data.get("can_use_internet", True),
+            can_use_image=data.get("can_use_image", True),
+            can_use_local_chat=data.get("can_use_local_chat", False),
+            # admin alanları eski kayıtlarda yoksa default değerler
+            is_banned=data.get("is_banned", False),
+            daily_internet_limit=data.get("daily_internet_limit", 50),
+            daily_image_limit=data.get("daily_image_limit", 20),
+        )
+
+
+def _load_users() -> List[User]:
+    if not USERS_FILE.exists():
+        logger.info("users.json bulunamadı, boş liste ile başlıyoruz.")
+        return []
+    try:
+        with USERS_FILE.open("r", encoding="utf-8") as f:
+            raw = json.load(f)
+        return [User.from_dict(u) for u in raw]
+    except Exception as e:
+        logger.error(f"Kullanıcıları okurken hata: {e}")
+        return []
+
+def list_users() -> List[User]:
+    """
+    Admin paneli için tüm kullanıcıları döner.
+    """
+    return _load_users()
+
+def _save_users(users: List[User]) -> None:
+    try:
+        with USERS_FILE.open("w", encoding="utf-8") as f:
+            json.dump([asdict(u) for u in users], f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Kullanıcıları yazarken hata: {e}")
+
+
+def _hash_password(password: str) -> str:
+    secret = settings.SECRET_KEY.encode("utf-8")
+    return hashlib.sha256(secret + password.encode("utf-8")).hexdigest()
+
+
+def create_user(username: str, password: str, role: str = "user") -> User:
+    users = _load_users()
+    if any(u.username == username for u in users):
+        raise ValueError("Bu kullanıcı adı zaten kullanılıyor.")
+
+    user = User(
+        username=username,
+        password_hash=_hash_password(password),
+        role=role,
+    )
+    users.append(user)
+    _save_users(users)
+    logger.info(f"Yeni kullanıcı oluşturuldu: {username}")
+    return user
+
+
+def get_user_by_username(username: str) -> Optional[User]:
+    users = _load_users()
+    for u in users:
+        if u.username == username:
+            return u
+    return None
+
+
+def verify_password(username: str, password: str) -> bool:
+    user = get_user_by_username(username)
+    if not user:
+        return False
+    return user.password_hash == _hash_password(password)
+def update_user(
+    username: str,
+    *,
+    role: Optional[str] = None,
+    censorship_level: Optional[int] = None,
+    can_use_internet: Optional[bool] = None,
+    can_use_image: Optional[bool] = None,
+    can_use_local_chat: Optional[bool] = None,
+    is_banned: Optional[bool] = None,
+    daily_internet_limit: Optional[int] = None,
+    daily_image_limit: Optional[int] = None,
+) -> Optional[User]:
+    """
+    Admin panelinden gelen ayarlarla kullanıcıyı günceller.
+    None olan parametreler değişmez.
+    """
+    users = _load_users()
+    target = None
+
+    for u in users:
+        if u.username == username:
+            target = u
+            break
+
+    if not target:
+        return None
+
+    if role is not None:
+        target.role = role
+    if censorship_level is not None:
+        target.censorship_level = censorship_level
+    if can_use_internet is not None:
+        target.can_use_internet = can_use_internet
+    if can_use_image is not None:
+        target.can_use_image = can_use_image
+    if can_use_local_chat is not None:
+        target.can_use_local_chat = can_use_local_chat
+    if is_banned is not None:
+        target.is_banned = is_banned
+    if daily_internet_limit is not None:
+        target.daily_internet_limit = daily_internet_limit
+    if daily_image_limit is not None:
+        target.daily_image_limit = daily_image_limit
+
+    _save_users(users)
+    logger.info(f"Kullanıcı güncellendi: {username}")
+    return target

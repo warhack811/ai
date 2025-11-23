@@ -1,0 +1,58 @@
+from __future__ import annotations
+import requests
+from enum import Enum
+from core.logger import get_logger
+from core.config import get_settings
+
+logger = get_logger(__name__)
+settings = get_settings()
+
+class ModelState(str, Enum):
+    GEMMA = "gemma"
+    FLUX = "flux"
+
+current_state = ModelState.GEMMA
+
+def _unload_ollama():
+    """
+    Ollama'ya yüklü modeli VRAM'den boşaltması için sinyal gönderir.
+    keep_alive=0 parametresi modeli hemen unload eder.
+    """
+    try:
+        url = f"{settings.OLLAMA_BASE_URL}/api/generate"
+        # Model ismini config'den alıyoruz, boş bir prompt ve 0 keep_alive gönderiyoruz.
+        payload = {
+            "model": settings.OLLAMA_GEMMA_MODEL,
+            "keep_alive": 0
+        }
+        resp = requests.post(url, json=payload, timeout=5)
+        if resp.status_code == 200:
+            logger.info("[GPU_STATE] Ollama (Gemma) VRAM'den boşaltıldı.")
+        else:
+            logger.warning(f"[GPU_STATE] Ollama unload başarısız: {resp.status_code}")
+    except Exception as e:
+        logger.error(f"[GPU_STATE] Ollama bağlantı hatası: {e}")
+
+def switch_to_flux():
+    """
+    Resim üretimine geçmeden önce Chat modelini (Gemma) VRAM'den atar.
+    """
+    global current_state
+    if current_state != ModelState.FLUX:
+        logger.info("[GPU_STATE] Flux moduna geçiliyor... Gemma VRAM'den atılıyor.")
+        _unload_ollama()
+        current_state = ModelState.FLUX
+
+def switch_to_gemma():
+    """
+    Resim işi bitti, sistem tekrar sohbet moduna hazır.
+    (Gemma'yı hemen yüklemeye gerek yok, ilk mesajda otomatik yüklenir,
+     sadece state'i güncelliyoruz.)
+    """
+    global current_state
+    if current_state != ModelState.GEMMA:
+        logger.info("[GPU_STATE] Gemma moduna (Chat) geri dönüldü.")
+        current_state = ModelState.GEMMA
+
+def get_state() -> ModelState:
+    return current_state

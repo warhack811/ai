@@ -1,0 +1,74 @@
+from __future__ import annotations
+
+import json
+import secrets
+import time
+from pathlib import Path
+from typing import Dict, Any, Optional
+
+from core.logger import get_logger
+
+logger = get_logger(__name__)
+
+TOKENS_FILE = Path("data/remember_tokens.json")
+TOKENS_FILE.parent.mkdir(parents=True, exist_ok=True)
+REMEMBER_COOKIE_NAME = "mami_remember"
+
+
+def _load_tokens() -> Dict[str, Any]:
+    if not TOKENS_FILE.exists():
+        return {}
+    try:
+        with TOKENS_FILE.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning(f"[REMEMBER] Token dosyası okunamadı: {e}")
+        return {}
+
+
+def _save_tokens(tokens: Dict[str, Any]) -> None:
+    try:
+        with TOKENS_FILE.open("w", encoding="utf-8") as f:
+            json.dump(tokens, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"[REMEMBER] Token dosyası yazılamadı: {e}")
+
+
+def create_remember_token(username: str, days: int = 30) -> str:
+    tokens = _load_tokens()
+    token = secrets.token_hex(32)
+    expires = int(time.time()) + days * 24 * 60 * 60
+
+    tokens[token] = {
+        "username": username,
+        "expires": expires,
+    }
+    _save_tokens(tokens)
+
+    logger.info(f"[REMEMBER] {username} için yeni token üretildi.")
+    return token
+
+
+def get_username_from_token(token: str) -> Optional[str]:
+    tokens = _load_tokens()
+    info = tokens.get(token)
+    if not info:
+        return None
+
+    now = int(time.time())
+    if info.get("expires", 0) < now:
+        # Süresi dolmuş, temizleyelim
+        tokens.pop(token, None)
+        _save_tokens(tokens)
+        logger.info("[REMEMBER] Süresi dolmuş token temizlendi.")
+        return None
+
+    return info.get("username")
+
+
+def invalidate_token(token: str) -> None:
+    tokens = _load_tokens()
+    if token in tokens:
+        tokens.pop(token, None)
+        _save_tokens(tokens)
+        logger.info("[REMEMBER] Token manuel olarak iptal edildi.")

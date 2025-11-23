@@ -1,0 +1,265 @@
+from __future__ import annotations
+
+import json
+import uuid
+from dataclasses import dataclass, asdict
+from datetime import datetime
+from pathlib import Path
+from typing import List
+
+from core.logger import get_logger
+
+logger = get_logger(__name__)
+
+# data/users.json ile aynı mantık: data klasörü
+DATA_DIR = Path("data")
+CONV_ROOT = DATA_DIR / "conversations"
+CONV_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+@dataclass
+class ConversationSummary:
+    id: str
+    title: str
+    created_at: str
+    updated_at: str
+
+
+@dataclass
+class MessageRecord:
+    role: str  # "user" veya "bot"
+    text: str
+    time: str  # "YYYY-MM-DD HH:MM:SS"
+
+
+def _user_dir(username: str) -> Path:
+    d = CONV_ROOT / username
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _index_path(username: str) -> Path:
+    return _user_dir(username) / "index.json"
+
+
+def _conv_path(username: str, conv_id: str) -> Path:
+    return _user_dir(username) / f"{conv_id}.jsonl"
+
+
+def _load_index(username: str) -> List[ConversationSummary]:
+    path = _index_path(username)
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        logger.error("Conversation index bozuk: %s", path)
+        return []
+    res: List[ConversationSummary] = []
+    for item in data:
+        try:
+            res.append(
+                ConversationSummary(
+                    id=item["id"],
+                    title=item.get("title", "Yeni sohbet"),
+                    created_at=item.get("created_at", ""),
+                    updated_at=item.get("updated_at", ""),
+                )
+            )
+        except KeyError:
+            continue
+    return res
+
+
+def _save_index(username: str, convs: List[ConversationSummary]) -> None:
+    path = _index_path(username)
+    data = [asdict(c) for c in convs]
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _now_str() -> str:
+    # Yerel saat, saniye hassasiyetinde
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _generate_id() -> str:
+    return "c_" + uuid.uuid4().hex[:10]
+
+
+def _default_title(message: str) -> str:
+    msg = message.strip().replace("\n", " ")
+    if not msg:
+        return "Yeni sohbet"
+    if len(msg) > 60:
+        return msg[:57] + "..."
+    return msg
+
+
+def list_conversations(username: str) -> List[ConversationSummary]:
+    """
+    Kullanıcının tüm sohbet özetlerini (id, başlık, tarih) döner.
+    En son güncellenen en üstte olacak şekilde sıralar.
+    """
+    convs = _load_index(username)
+    convs.sort(key=lambda c: c.updated_at or c.created_at, reverse=True)
+    return convs
+
+
+def create_conversation(username: str, first_message: str | None = None) -> ConversationSummary:
+    """
+    Yeni bir sohbet oluşturur ve index'e ekler.
+    """
+    convs = _load_index(username)
+    conv_id = _generate_id()
+    now = _now_str()
+    title = _default_title(first_message or "")
+    summary = ConversationSummary(
+        id=conv_id,
+        title=title,
+        created_at=now,
+        updated_at=now,
+    )
+    convs.append(summary)
+    _save_index(username, convs)
+
+    # Boş mesaj dosyası oluştur
+    path = _conv_path(username, conv_id)
+    if not path.exists():
+        path.write_text("", encoding="utf-8")
+
+    logger.info("[CONV] Yeni sohbet oluşturuldu: %s / %s", username, conv_id)
+    return summary
+
+
+def touch_conversation(username: str, conv_id: str) -> None:
+    """
+    Sadece updated_at alanını günceller (mesaj eklendiğinde).
+    """
+    convs = _load_index(username)
+    now = _now_str()
+    changed = False
+    for c in convs:
+        if c.id == conv_id:
+            c.updated_at = now
+            changed = True
+            break
+    if changed:
+        _save_index(username, convs)
+
+
+def append_message(username: str, conv_id: str, role: str, text: str, time_str: str | None = None) -> None:
+    """
+    Sohbete bir mesaj satırı ekler (jsonl formatında).
+    """
+    if time_str is None:
+        time_str = _now_str()
+    path = _conv_path(username, conv_id)
+    if not path.exists():
+        # sohbet silinmişse yeniden başlat
+        logger.warning(
+            "[CONV] Mesaj eklenirken sohbet dosyası yoktu, yeniden oluşturuluyor: %s / %s",
+            username,
+            conv_id,
+        )
+        _user_dir(username)  # dizini mevcut olduğundan emin ol
+
+    rec = MessageRecord(role=role, text=text, time=time_str)
+    line = json.dumps(asdict(rec), ensure_ascii=False)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+    touch_conversation(username, conv_id)
+
+
+def load_messages(username: str, conv_id: str) -> List[MessageRecord]:
+    """
+    Belirli bir sohbetin tüm mesajlarını kronolojik sırada döner.
+    """
+    path = _conv_path(username, conv_id)
+    if not path.exists():
+        return []
+    res: List[MessageRecord] = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+                res.append(
+                    MessageRecord(
+                        role=data.get("role", "bot"),
+                        text=data.get("text", ""),
+                        time=data.get("time", ""),
+                    )
+                )
+            except json.JSONDecodeError:
+                continue
+    return res
+
+
+def build_context_from_messages(
+    messages,
+    max_messages: int = 50,
+    max_chars: int = 8000,
+) -> str:
+    """
+    Mesaj listesinden, model için düz bir metin bağlamı üretir.
+    """
+    reversed_msgs = list(reversed(messages))
+    selected = []
+    total_chars = 0
+
+    for msg in reversed_msgs:
+        text_len = len(getattr(msg, "text", "") or "")
+        if selected and (len(selected) >= max_messages or total_chars + text_len > max_chars):
+            break
+        selected.append(msg)
+        total_chars += text_len
+
+    selected.reverse()
+
+    lines: List[str] = []
+    for m in selected:
+        role = "kullanıcı" if getattr(m, "role", "") == "user" else "asistan"
+        t = getattr(m, "time", "")
+        if " " in t:
+            t = t.split(" ")[1][:5]
+        lines.append(f"[{role} @ {t}] {getattr(m, 'text', '')}")
+
+    return "\n".join(lines)
+
+def get_recent_context(
+    username: str,
+    conv_id: str,
+    max_messages: int = 50,
+    max_chars: int = 8000,
+) -> str:
+    """
+    Belirli bir sohbet için son mesajlardan bağlam üretir.
+    """
+    msgs = load_messages(username, conv_id)
+    if not msgs:
+        return ""
+    return build_context_from_messages(msgs, max_messages=max_messages, max_chars=max_chars)
+
+def delete_conversation(username: str, conv_id: str) -> None:
+    """
+    Bir sohbeti index'ten ve jsonl dosyasından siler.
+    """
+    from pathlib import Path as _Path  # tekrar import gerekirse
+
+    convs = _load_index(username)
+    new_convs = [c for c in convs if c.id != conv_id]
+    if len(new_convs) != len(convs):
+        _save_index(username, new_convs)
+        logger.info("[CONV] Sohbet silindi: %s / %s", username, conv_id)
+    else:
+        logger.warning("[CONV] Silinecek sohbet bulunamadı: %s / %s", username, conv_id)
+
+    path = _conv_path(username, conv_id)
+    try:
+        if path.exists():
+            path.unlink()
+    except Exception as e:
+        logger.error("[CONV] Sohbet dosyası silinirken hata: %s / %s / %s", username, conv_id, e)
